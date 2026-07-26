@@ -121,6 +121,17 @@ func (d *Db) migrate() error {
 	if err := ensureColumn(d.conn, "request_logs", "api_key_id", "INTEGER"); err != nil {
 		return err
 	}
+	// v6: indexes for common query patterns.
+	for _, idx := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs(ts)",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_api_key_id ON request_logs(api_key_id)",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_account_id ON request_logs(account_id)",
+		"CREATE INDEX IF NOT EXISTS idx_request_logs_model ON request_logs(model)",
+	} {
+		if _, err := d.conn.Exec(idx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

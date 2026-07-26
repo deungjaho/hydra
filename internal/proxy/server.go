@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -53,6 +54,9 @@ func (s *ProxyServer) Serve() error {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      600 * time.Second, // long for streaming
+		MaxHeaderBytes:    1 << 20,           // 1MB headers
 	}
 	log.Printf("hydra proxy listening on http://%s", addr)
 	return srv.ListenAndServe()
@@ -81,13 +85,15 @@ func (s *ProxyServer) handleListModels(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	defer func() { s.State.metrics.observeDuration(time.Since(startTime).Seconds()) }()
 	apiKeyID, ok := s.checkAuth(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20)) // 32MB
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -250,13 +256,15 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 // ---------------------------------------------------------------------------
 
 func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
+	startTime := time.Now()
+	defer func() { s.State.metrics.observeDuration(time.Since(startTime).Seconds()) }()
 	apiKeyID, ok := s.checkAuth(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20)) // 32MB
 	if err != nil {
 		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
 		return
@@ -582,13 +590,23 @@ func (s *ProxyServer) checkAuth(r *http.Request) (*int64, bool) {
 }
 
 func clientIPFrom(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
+	// Use RemoteAddr as the source of truth. X-Forwarded-For is only
+	// used if RemoteAddr is localhost (behind a known reverse proxy).
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
 	}
-	return ""
+	// If the request came from localhost, trust X-Forwarded-For.
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			// Take the leftmost (original client) IP.
+			if i := strings.Index(xff, ","); i >= 0 {
+				return strings.TrimSpace(xff[:i])
+			}
+			return strings.TrimSpace(xff)
+		}
+	}
+	return host
 }
 
 func derefInt64(p *int64) int64 {

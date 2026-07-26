@@ -2,6 +2,7 @@ package account
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,33 +98,10 @@ func (w QuotaWindow) ResetIn() string {
 }
 
 func formatOne(v int64, unit string) string {
-	return itoa(v) + unit
+	return strconv.FormatInt(v, 10) + unit
 }
 func formatTwo(a int64, ua string, b int64, ub string) string {
-	return itoa(a) + ua + " " + itoa(b) + ub
-}
-
-func itoa(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := false
-	if v < 0 {
-		neg = true
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.FormatInt(a, 10) + ua + " " + strconv.FormatInt(b, 10) + ub
 }
 
 // QuotaWindows holds the four quota windows for an account.

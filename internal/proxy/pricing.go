@@ -1,5 +1,7 @@
 package proxy
 
+import "strings"
+
 // Model pricing table + cost calculation.
 //
 // Prices are USD per 1 million tokens, sourced from public model pricing pages.
@@ -52,40 +54,20 @@ func lookupPrice(model string) price {
 	if p, ok := prices[model]; ok {
 		return p
 	}
-	m := toLower(model)
+	m := strings.ToLower(model)
 	switch {
-	case hasPrefix(m, "claude-opus"):
+	case strings.HasPrefix(m, "claude-opus"):
 		return prices["claude-opus-4-6"]
-	case hasPrefix(m, "claude-sonnet"):
+	case strings.HasPrefix(m, "claude-sonnet"):
 		return prices["claude-sonnet-4-6"]
-	case hasPrefix(m, "claude-haiku"):
-		// Haiku is cheaper; approximate with sonnet as a conservative upper bound.
+	case strings.HasPrefix(m, "claude-haiku"):
 		return prices["claude-sonnet-4-6"]
-	case hasPrefix(m, "gemini-3-pro") || hasPrefix(m, "gemini-3.1-pro"):
+	case strings.HasPrefix(m, "gemini-3-pro") || strings.HasPrefix(m, "gemini-3.1-pro"):
 		return prices["gemini-3-pro"]
-	case hasPrefix(m, "gemini-3-flash") || hasPrefix(m, "gemini-2.5-flash"):
+	case strings.HasPrefix(m, "gemini-3-flash") || strings.HasPrefix(m, "gemini-2.5-flash"):
 		return prices["gemini-2.5-flash"]
 	}
 	return zeroPrice
-}
-
-func toLower(s string) string {
-	out := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
-		}
-		out[i] = c
-	}
-	return string(out)
-}
-
-func hasPrefix(s, prefix string) bool {
-	if len(s) < len(prefix) {
-		return false
-	}
-	return s[:len(prefix)] == prefix
 }
 
 func maxInt64(a, b int64) int64 {

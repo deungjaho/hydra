@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -73,7 +74,7 @@ func AnthropicTransformRequest(req map[string]any, projectID, sessionID string, 
 	if isThinking {
 		budget := uint64(10000)
 		if thinkingAny, ok := req["thinking"].(map[string]any); ok {
-			if b := uint64Or(thinkingAny, "budget_tokens", 10000); b != 10000 || true {
+			if b := uint64Or(thinkingAny, "budget_tokens", 10000); b != 0 {
 				budget = b
 			}
 		}
@@ -706,18 +707,5 @@ func uint64Or(m map[string]any, key string, def uint64) uint64 {
 }
 
 func itoaUint64(v uint64) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
+	return strconv.FormatUint(v, 10)
 }
-
-// timeNow is a small indirection so tests can stub it; here it's just time.Now.
-// (Removed — see time.Now() usage elsewhere.)

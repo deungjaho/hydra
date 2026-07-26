@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -135,7 +136,7 @@ func TransformRequest(openaiReq map[string]any, projectID, sessionID string, req
 		"maxOutputTokens": orDefault(openaiReq, "max_tokens", 65536),
 	}
 	if isThinkingModel(mappedModel) {
-		maxOut := int64(orDefault(openaiReq, "max_tokens", 65536).(float64))
+		maxOut := toInt64(orDefault(openaiReq, "max_tokens", 65536), 65536)
 		// thinkingBudget must be < maxOutputTokens (Anthropic requirement).
 		var budget int64 = 10000
 		if budget >= maxOut {
@@ -156,6 +157,18 @@ func TransformRequest(openaiReq map[string]any, projectID, sessionID string, req
 		}
 	}
 	requestBody["generationConfig"] = genConfig
+
+	// response_format: json_object → tell Gemini to output JSON.
+	if rf, ok := openaiReq["response_format"].(map[string]any); ok {
+		if t, _ := rf["type"].(string); t == "json_object" {
+			genConfig["responseMimeType"] = "application/json"
+			if schema, ok := rf["json_schema"].(map[string]any); ok {
+				if s, ok := schema["schema"].(map[string]any); ok {
+					genConfig["responseSchema"] = s
+				}
+			}
+		}
+	}
 
 	// safetySettings — disable all safety filters (matches Antigravity desktop).
 	requestBody["safetySettings"] = []any{
@@ -702,6 +715,24 @@ func orDefault(m map[string]any, key string, def any) any {
 	return def
 }
 
+// toInt64 safely converts any JSON number type (float64, int64, json.Number)
+// to int64, returning def on failure.
+func toInt64(v any, def int64) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	case json.Number:
+		if i, err := n.Int64(); err == nil {
+			return i
+		}
+	}
+	return def
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {
@@ -712,16 +743,8 @@ func contains(list []string, s string) bool {
 }
 
 func sortStrings(s []string) {
-	// Insertion sort — lists are small.
-	for i := 1; i < len(s); i++ {
-		j := i
-		for j > 0 && s[j-1] > s[j] {
-			s[j-1], s[j] = s[j], s[j-1]
-			j--
-		}
-	}
+	sort.Strings(s)
 }
-
 func compactUUID() string {
 	return strings.ReplaceAll(uuid.NewString(), "-", "")
 }

@@ -98,6 +98,17 @@ func (s *ProxyServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// --- Request duration histogram ---
+	buckets, counts, sum, total := s.State.metrics.snapshot()
+	b.WriteString("\n# HELP hydra_request_duration_seconds Request latency distribution.\n")
+	b.WriteString("# TYPE hydra_request_duration_seconds histogram\n")
+	for i, bound := range buckets {
+		b.WriteString(fmt.Sprintf("hydra_request_duration_seconds_bucket{le=\"%g\"} %d\n", bound, counts[i]))
+	}
+	b.WriteString(fmt.Sprintf("hydra_request_duration_seconds_bucket{le=\"+Inf\"} %d\n", total))
+	b.WriteString(fmt.Sprintf("hydra_request_duration_seconds_sum %.6f\n", sum))
+	b.WriteString(fmt.Sprintf("hydra_request_duration_seconds_count %d\n", total))
+
 	_, _ = w.Write([]byte(b.String()))
 }
 

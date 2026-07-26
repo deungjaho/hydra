@@ -3,6 +3,7 @@ package proxy
 import (
 	"math/rand"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -240,6 +241,46 @@ type ProxyState struct {
 	Sticky         *StickySessions
 	requestCounter muCounter
 	startedAt      time.Time
+	metrics        metricsCollector
+}
+
+// metricsCollector tracks in-memory request metrics for Prometheus.
+type metricsCollector struct {
+	mu       sync.Mutex
+	buckets  []float64 // histogram bucket upper bounds
+	counts   []uint64  // count per bucket
+	sum      float64
+	total    uint64
+}
+
+func newMetricsCollector() metricsCollector {
+	return metricsCollector{
+		buckets: []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60},
+		counts:  make([]uint64, 9),
+	}
+}
+
+func (m *metricsCollector) observeDuration(seconds float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sum += seconds
+	m.total++
+	for i, b := range m.buckets {
+		if seconds <= b {
+			m.counts[i]++
+			break
+		}
+	}
+}
+
+func (m *metricsCollector) snapshot() (buckets []float64, counts []uint64, sum float64, total uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	buckets = append([]float64{}, m.buckets...)
+	counts = append([]uint64{}, m.counts...)
+	sum = m.sum
+	total = m.total
+	return
 }
 
 type muCounter struct {
@@ -260,31 +301,13 @@ func NewProxyState(d *db.Db) *ProxyState {
 		RateLimiter: NewRateLimitTracker(),
 		Sticky:      NewStickySessions(),
 		startedAt:   time.Now(),
+		metrics:     newMetricsCollector(),
 	}
 }
 
 func (s *ProxyState) NextRequestN() uint64 { return s.requestCounter.Next() }
 
-// itoaInt64 is a small helper to avoid strconv in hot paths.
+// itoaInt64 wraps strconv.FormatInt for use in cooldown keys.
 func itoaInt64(v int64) string {
-	if v == 0 {
-		return "0"
-	}
-	neg := false
-	if v < 0 {
-		neg = true
-		v = -v
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
+	return strconv.FormatInt(v, 10)
 }

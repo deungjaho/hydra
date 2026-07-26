@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -141,7 +142,41 @@ func Load() (*AppConfig, error) {
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
 	}
+	applyEnvOverrides(&cfg)
 	return &cfg, nil
+}
+
+// applyEnvOverrides lets environment variables override config file values.
+// Supported: HYDRA_PORT, HYDRA_BIND, HYDRA_API_KEY, HYDRA_UPSTREAM_PROXY,
+// HYDRA_LOG_REQUESTS, HYDRA_SCHEDULING_MODE.
+func applyEnvOverrides(cfg *AppConfig) {
+	if v := os.Getenv("HYDRA_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p < 65536 {
+			cfg.Proxy.Port = p
+		}
+	}
+	if v := os.Getenv("HYDRA_BIND"); v != "" {
+		cfg.Proxy.Bind = v
+	}
+	if v := os.Getenv("HYDRA_API_KEY"); v != "" {
+		cfg.Proxy.APIKey = v
+	}
+	if v := os.Getenv("HYDRA_UPSTREAM_PROXY"); v != "" {
+		cfg.Proxy.UpstreamProxy = v
+	}
+	if v := os.Getenv("HYDRA_LOG_REQUESTS"); v != "" {
+		cfg.Proxy.LogRequests = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("HYDRA_SCHEDULING_MODE"); v != "" {
+		switch strings.ToLower(v) {
+		case "cache":
+			cfg.Scheduling.Mode = SchedulingCache
+		case "balance":
+			cfg.Scheduling.Mode = SchedulingBalance
+		case "performance":
+			cfg.Scheduling.Mode = SchedulingPerformance
+		}
+	}
 }
 
 func (c *AppConfig) Save() error {
