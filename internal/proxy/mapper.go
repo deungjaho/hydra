@@ -462,7 +462,15 @@ func normalizeSchemaTypes(schema map[string]any) {
 		}
 	}
 	// Remove fields Gemini rejects.
-	for _, k := range []string{"format", "strict", "$schema", "definitions"} {
+	for _, k := range []string{
+		"format", "strict", "$schema", "definitions",
+		"exclusiveMinimum", "exclusiveMaximum", "default", "examples",
+		"pattern", "multipleOf", "minLength", "maxLength",
+		"minItems", "maxItems", "minProperties", "maxProperties",
+		"uniqueItems", "const", "enum", "title", "$ref",
+		"additionalProperties", "propertyNames",
+		"oneOf", "anyOf", "allOf", "not",
+	} {
 		delete(schema, k)
 	}
 	if props, ok := schema["properties"].(map[string]any); ok {

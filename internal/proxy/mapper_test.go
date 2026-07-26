@@ -168,13 +168,44 @@ func TestNormalizeSchemaTypes_Nested(t *testing.T) {
 
 func TestNormalizeSchemaTypes_RemovesUnsupportedFields(t *testing.T) {
 	schema := map[string]any{
-		"type":        "object",
-		"strict":      true,
-		"$schema":     "http://json-schema.org/draft-07/schema#",
-		"definitions": map[string]any{},
+		"type":                "object",
+		"strict":              true,
+		"$schema":             "http://json-schema.org/draft-07/schema#",
+		"definitions":         map[string]any{},
+		"exclusiveMinimum":    0,
+		"exclusiveMaximum":    100,
+		"default":             "x",
+		"examples":            []any{},
+		"pattern":             "^[a-z]+$",
+		"multipleOf":          2,
+		"minLength":           1,
+		"maxLength":           100,
+		"minItems":            0,
+		"maxItems":            10,
+		"minProperties":       1,
+		"maxProperties":       10,
+		"uniqueItems":         true,
+		"const":               "x",
+		"enum":                []any{"a", "b"},
+		"title":               "Test",
+		"$ref":                "#/definitions/foo",
+		"additionalProperties": true,
+		"propertyNames":       map[string]any{},
+		"oneOf":               []any{},
+		"anyOf":               []any{},
+		"allOf":               []any{},
+		"not":                 map[string]any{},
 	}
 	normalizeSchemaTypes(schema)
-	for _, k := range []string{"format", "strict", "$schema", "definitions"} {
+	for _, k := range []string{
+		"format", "strict", "$schema", "definitions",
+		"exclusiveMinimum", "exclusiveMaximum", "default", "examples",
+		"pattern", "multipleOf", "minLength", "maxLength",
+		"minItems", "maxItems", "minProperties", "maxProperties",
+		"uniqueItems", "const", "enum", "title", "$ref",
+		"additionalProperties", "propertyNames",
+		"oneOf", "anyOf", "allOf", "not",
+	} {
 		if _, exists := schema[k]; exists {
 			t.Errorf("%q should be removed", k)
 		}
