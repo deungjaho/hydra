@@ -930,9 +930,21 @@ func (m tuiModel) renderAccounts() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Accounts (%d)", len(m.accounts))))
 	b.WriteString("\n")
-	header := fmt.Sprintf("  %-4s %-26s %-14s %-14s %-14s %-14s %s",
-		"ID", "EMAIL", "GEM_5H", "GEM_WK", "EXT_5H", "EXT_WK", "STATUS")
-	b.WriteString(grayStyle.Render(header))
+	// Use lipgloss styled Width for columns — %-14s breaks on ANSI-colored strings.
+	idW := 4
+	emailW := 26
+	quotaW := 16
+	idStyle := lipgloss.NewStyle().Width(idW)
+	emailStyle := lipgloss.NewStyle().Width(emailW)
+	quotaStyle := lipgloss.NewStyle().Width(quotaW)
+	header := idStyle.Foreground(lipgloss.Color("245")).Render("ID") + " " +
+		emailStyle.Foreground(lipgloss.Color("245")).Render("EMAIL") + " " +
+		quotaStyle.Foreground(lipgloss.Color("245")).Render("GEM_5H") + " " +
+		quotaStyle.Foreground(lipgloss.Color("245")).Render("GEM_WK") + " " +
+		quotaStyle.Foreground(lipgloss.Color("245")).Render("EXT_5H") + " " +
+		quotaStyle.Foreground(lipgloss.Color("245")).Render("EXT_WK") + " " +
+		grayStyle.Render("STATUS")
+	b.WriteString(header)
 	b.WriteString("\n")
 	for i, a := range m.accounts {
 		gw := a.QuotaWindowsParsed()
@@ -940,18 +952,17 @@ func (m tuiModel) renderAccounts() string {
 		if a.Disabled {
 			status = redStyle.Render("disabled")
 		}
-		row := fmt.Sprintf("%-4d %-26s %-14s %-14s %-14s %-14s %s",
-			a.ID, a.Email,
-			formatQuotaWindowStyled(gw.Gemini5h),
-			formatQuotaWindowStyled(gw.GeminiWeekly),
-			formatQuotaWindowStyled(gw.Other5h),
-			formatQuotaWindowStyled(gw.OtherWeekly),
-			status,
-		)
+		row := fmt.Sprintf("%-*d", idW, a.ID) + " " +
+			emailStyle.Render(a.Email) + " " +
+			quotaStyle.Render(formatQuotaWindowStyled(gw.Gemini5h)) + " " +
+			quotaStyle.Render(formatQuotaWindowStyled(gw.GeminiWeekly)) + " " +
+			quotaStyle.Render(formatQuotaWindowStyled(gw.Other5h)) + " " +
+			quotaStyle.Render(formatQuotaWindowStyled(gw.OtherWeekly)) + " " +
+			status
 		if i == m.cursor {
-			b.WriteString(selectedStyle.Render(" " + row))
+			b.WriteString(selectedStyle.Render(row))
 		} else {
-			b.WriteString(" " + row)
+			b.WriteString(row)
 		}
 		b.WriteString("\n")
 	}
@@ -986,9 +997,25 @@ func (m tuiModel) renderKeys() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("API Keys (%d)", len(m.keys))))
 	b.WriteString("\n")
-	header := fmt.Sprintf("  %-4s %-14s %-20s %-8s %-8s %-10s %-10s %-12s",
-		"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST", "CREATED")
-	b.WriteString(grayStyle.Render(header))
+	// Column styles for ANSI-safe alignment.
+	cID := lipgloss.NewStyle().Width(4)
+	cLabel := lipgloss.NewStyle().Width(14)
+	cKey := lipgloss.NewStyle().Width(20)
+	cStatus := lipgloss.NewStyle().Width(8)
+	cReqs := lipgloss.NewStyle().Width(8)
+	cTokens := lipgloss.NewStyle().Width(10)
+	cCost := lipgloss.NewStyle().Width(10)
+	cCreated := lipgloss.NewStyle().Width(12)
+	gh := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	header := cID.Render(gh.Render("ID")) + " " +
+		cLabel.Render(gh.Render("LABEL")) + " " +
+		cKey.Render(gh.Render("KEY")) + " " +
+		cStatus.Render(gh.Render("STATUS")) + " " +
+		cReqs.Render(gh.Render("REQS")) + " " +
+		cTokens.Render(gh.Render("TOKENS")) + " " +
+		cCost.Render(gh.Render("COST")) + " " +
+		cCreated.Render(gh.Render("CREATED"))
+	b.WriteString(header)
 	b.WriteString("\n")
 	for i, k := range m.keys {
 		var reqs, tokens int64
@@ -1010,12 +1037,18 @@ func (m tuiModel) renderKeys() string {
 			status = redStyle.Render("disabled")
 		}
 		created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
-		row := fmt.Sprintf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s",
-			k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
+		row := cID.Render(fmt.Sprintf("%d", k.ID)) + " " +
+			cLabel.Render(k.Label) + " " +
+			cKey.Render(prefix) + " " +
+			cStatus.Render(status) + " " +
+			cReqs.Render(fmt.Sprintf("%d", reqs)) + " " +
+			cTokens.Render(fmt.Sprintf("%d", tokens)) + " " +
+			cCost.Render(fmt.Sprintf("$%.4f", cost)) + " " +
+			cCreated.Render(created)
 		if i == m.cursor {
-			b.WriteString(selectedStyle.Render(" " + row))
+			b.WriteString(selectedStyle.Render(row))
 		} else {
-			b.WriteString(" " + row)
+			b.WriteString(row)
 		}
 		b.WriteString("\n")
 	}
@@ -1030,10 +1063,24 @@ func (m tuiModel) renderLogs() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Recent Logs (%d)", len(m.logs))))
 	b.WriteString("\n")
-	// Header row for consistency with other tabs.
-	header := fmt.Sprintf("  %-11s %-3s %-4s %-4s %-22s %-7s %-7s %s",
-		"TIME", "ST", "ACC", "KEY", "MODEL", "PROMPT", "COMPL", "COST/ERROR")
-	b.WriteString(grayStyle.Render(header))
+	// Column styles for ANSI-safe alignment.
+	lTime := lipgloss.NewStyle().Width(11)
+	lStatus := lipgloss.NewStyle().Width(3)
+	lAcc := lipgloss.NewStyle().Width(6)
+	lKey := lipgloss.NewStyle().Width(8)
+	lModel := lipgloss.NewStyle().Width(22)
+	lPrompt := lipgloss.NewStyle().Width(7)
+	lCompl := lipgloss.NewStyle().Width(7)
+	gh := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	header := lTime.Render(gh.Render("TIME")) + " " +
+		lStatus.Render(gh.Render("ST")) + " " +
+		lAcc.Render(gh.Render("ACC")) + " " +
+		lKey.Render(gh.Render("KEY")) + " " +
+		lModel.Render(gh.Render("MODEL")) + " " +
+		lPrompt.Render(gh.Render("PROMPT")) + " " +
+		lCompl.Render(gh.Render("COMPL")) + " " +
+		gh.Render("COST")
+	b.WriteString(header)
 	b.WriteString("\n")
 	cap := m.bodyHeight() - 3 // title + header + scroll indicator
 	if cap < 1 {
@@ -1086,8 +1133,8 @@ func (m tuiModel) renderLogs() string {
 				accCtx = fmt.Sprintf("#%d", l.AccountID)
 			}
 		}
-		if len(accCtx) > 4 {
-			accCtx = accCtx[:4]
+		if len(accCtx) > 6 {
+			accCtx = accCtx[:6]
 		}
 		// Key context (label).
 		keyCtx := "-"
@@ -1098,28 +1145,28 @@ func (m tuiModel) renderLogs() string {
 				keyCtx = fmt.Sprintf("#%d", l.APIKeyID)
 			}
 		}
-		if len(keyCtx) > 4 {
-			keyCtx = keyCtx[:4]
+		if len(keyCtx) > 8 {
+			keyCtx = keyCtx[:8]
 		}
 		cost := "-"
 		if l.HasCost {
 			cost = fmt.Sprintf("$%.4f", l.CostUSD)
 		}
-		line := fmt.Sprintf("%-11s %-3s %-4s %-4s %-22s %-7d %-7d %s",
-			t, statusColor.Render(fmt.Sprintf("%d", l.Status)),
-			accCtx, keyCtx,
-			modelColor.Render(fmt.Sprintf("%-22s", model)),
-			orInt64(l.HasPromptTokens, l.PromptTokens, 0),
-			orInt64(l.HasCompletion, l.CompletionTokens, 0),
-			cost,
-		)
+		line := lTime.Render(t) + " " +
+			lStatus.Render(statusColor.Render(fmt.Sprintf("%d", l.Status))) + " " +
+			lAcc.Render(accCtx) + " " +
+			lKey.Render(keyCtx) + " " +
+			lModel.Render(modelColor.Render(model)) + " " +
+			lPrompt.Render(fmt.Sprintf("%d", orInt64(l.HasPromptTokens, l.PromptTokens, 0))) + " " +
+			lCompl.Render(fmt.Sprintf("%d", orInt64(l.HasCompletion, l.CompletionTokens, 0))) + " " +
+			cost
 		if l.HasError && l.Error != "" {
 			line += " " + redStyle.Render("!")
 		}
 		b.WriteString(line + "\n")
 	}
 	if len(m.logs) > cap {
-		b.WriteString(grayStyle.Render(fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll", m.logScroll+1, end, len(m.logs))))
+		b.WriteString(grayStyle.Render(fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll · Space detail", m.logScroll+1, end, len(m.logs))))
 	}
 	return b.String()
 }
@@ -1132,10 +1179,15 @@ func (m tuiModel) renderModels() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Models (%d)", len(m.models))))
 	b.WriteString("\n")
-	// No # column, no FAMILY column — color coding is sufficient.
-	header := fmt.Sprintf("  %-34s %-10s %-12s",
-		"MODEL ID", "REQS", "COST")
-	b.WriteString(grayStyle.Render(header))
+	// Column styles for ANSI-safe alignment.
+	mModel := lipgloss.NewStyle().Width(34)
+	mReqs := lipgloss.NewStyle().Width(10)
+	mCost := lipgloss.NewStyle().Width(12)
+	gh := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	header := mModel.Render(gh.Render("MODEL ID")) + " " +
+		mReqs.Render(gh.Render("REQS")) + " " +
+		mCost.Render(gh.Render("COST"))
+	b.WriteString(header)
 	b.WriteString("\n")
 	for i, name := range m.models {
 		modelColor := grayStyle
@@ -1151,7 +1203,7 @@ func (m tuiModel) renderModels() string {
 		}
 		usageStr := grayStyle.Render("0")
 		if usage > 0 {
-			usageStr = yellowStyle.Render(fmt.Sprintf("%-10d", usage))
+			usageStr = yellowStyle.Render(fmt.Sprintf("%d", usage))
 		}
 		costStr := grayStyle.Render("-")
 		if m.stats.modelCost != nil {
@@ -1159,12 +1211,13 @@ func (m tuiModel) renderModels() string {
 				costStr = greenStyle.Render(fmt.Sprintf("$%.4f", c))
 			}
 		}
-		row := fmt.Sprintf("%-34s %-10s %-12s",
-			modelColor.Render(fmt.Sprintf("%-34s", name)), usageStr, costStr)
+		row := mModel.Render(modelColor.Render(name)) + " " +
+			mReqs.Render(usageStr) + " " +
+			mCost.Render(costStr)
 		if i == m.modelsCur {
-			b.WriteString(selectedStyle.Render(" " + row))
+			b.WriteString(selectedStyle.Render(row))
 		} else {
-			b.WriteString(" " + row)
+			b.WriteString(row)
 		}
 		b.WriteString("\n")
 	}
