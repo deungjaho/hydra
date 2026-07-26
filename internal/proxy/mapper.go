@@ -340,11 +340,33 @@ func openAIMessageToContent(msg map[string]any, toolNameMap map[string]string) m
 					if urlStr, ok := img["url"].(string); ok {
 						if rest, ok := strings.CutPrefix(urlStr, "data:"); ok {
 							if mime, data, ok := strings.Cut(rest, ","); ok {
+								// mime is like "image/png;base64" — strip the ";base64" suffix
+								if i := strings.Index(mime, ";"); i >= 0 {
+									mime = mime[:i]
+								}
 								parts = append(parts, map[string]any{
 									"inlineData": map[string]any{"mimeType": mime, "data": data},
 								})
 							}
 						}
+					}
+				}
+				if audio, ok := part["input_audio"].(map[string]any); ok {
+					data, _ := audio["data"].(string)
+					format, _ := audio["format"].(string)
+					if data != "" {
+						mimeType := "audio/wav"
+						switch format {
+						case "mp3", "mpeg":
+							mimeType = "audio/mpeg"
+						case "webm":
+							mimeType = "audio/webm"
+						case "mp4", "m4a":
+							mimeType = "audio/mp4"
+						}
+						parts = append(parts, map[string]any{
+							"inlineData": map[string]any{"mimeType": mimeType, "data": data},
+						})
 					}
 				}
 			}
