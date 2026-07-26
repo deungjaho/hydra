@@ -1,0 +1,249 @@
+package proxy
+
+import (
+	"math/rand"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/deungjaho/hydra/internal/account"
+	"github.com/deungjaho/hydra/internal/config"
+	"github.com/deungjaho/hydra/internal/db"
+)
+
+// RateLimitTracker tracks per-account / per-model cooldowns in memory.
+type RateLimitTracker struct {
+	mu        sync.Mutex
+	cooldowns map[string]time.Time
+}
+
+func NewRateLimitTracker() *RateLimitTracker {
+	return &RateLimitTracker{cooldowns: make(map[string]time.Time)}
+}
+
+func (r *RateLimitTracker) IsLimited(accountID int64, model string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.cooldowns[r.key(accountID, model)]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(t)
+}
+
+func (r *RateLimitTracker) SetCooldown(accountID int64, model string, secs int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cooldowns[r.key(accountID, model)] = time.Now().Add(time.Duration(secs) * time.Second)
+}
+
+func (r *RateLimitTracker) Clear(accountID int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefix := itoaInt64(accountID) + ":"
+	bare := itoaInt64(accountID)
+	for k := range r.cooldowns {
+		if strings.HasPrefix(k, prefix) || k == bare {
+			delete(r.cooldowns, k)
+		}
+	}
+}
+
+func (r *RateLimitTracker) key(accountID int64, model string) string {
+	if model == "" {
+		return itoaInt64(accountID)
+	}
+	return itoaInt64(accountID) + ":" + model
+}
+
+// StickySessions maps session id → account id.
+type StickySessions struct {
+	mu       sync.Mutex
+	bindings map[string]int64
+}
+
+func NewStickySessions() *StickySessions {
+	return &StickySessions{bindings: make(map[string]int64)}
+}
+
+func (s *StickySessions) Get(sessionID string) (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.bindings[sessionID]
+	return id, ok
+}
+
+func (s *StickySessions) Bind(sessionID string, accountID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bindings[sessionID] = accountID
+}
+
+func (s *StickySessions) Unbind(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.bindings, sessionID)
+}
+
+// SelectAccount picks the best available account for a request.
+//
+// mappedModel is the orbit-mapped model id (post-rewrite).
+// sessionID is the conversation session id (used for sticky binding).
+// protectedFilter — when true, accounts whose protected_models contains
+// mappedModel are excluded.
+func SelectAccount(
+	accounts []*account.Account,
+	limiter *RateLimitTracker,
+	sticky *StickySessions,
+	mode config.SchedulingMode,
+	mappedModel string,
+	sessionID string,
+	protectedFilter bool,
+) *account.Account {
+	modelLC := strings.ToLower(mappedModel)
+	var candidates []*account.Account
+	for _, a := range accounts {
+		if a.Disabled {
+			continue
+		}
+		if limiter.IsLimited(a.ID, mappedModel) {
+			continue
+		}
+		if protectedFilter {
+			protected := false
+			for _, m := range a.ProtectedModels {
+				if strings.ToLower(m) == modelLC {
+					protected = true
+					break
+				}
+			}
+			if protected {
+				continue
+			}
+		}
+		candidates = append(candidates, a)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Sticky session (Cache + Balance).
+	if sessionID != "" && mode != config.SchedulingPerformance {
+		if boundID, ok := sticky.Get(sessionID); ok {
+			for _, a := range candidates {
+				if a.ID == boundID {
+					return a
+				}
+			}
+			// Bound account unavailable — unbind.
+			sticky.Unbind(sessionID)
+		}
+	}
+
+	// Performance → P2C.
+	if mode == config.SchedulingPerformance {
+		return p2cSelect(candidates)
+	}
+
+	// Balance / Cache without binding: sort by quota_remaining desc, then LRU.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		qa := quotaRemainingOrZero(candidates[i])
+		qb := quotaRemainingOrZero(candidates[j])
+		if qa != qb {
+			return qa > qb
+		}
+		return lastUsedOrZero(candidates[i]) < lastUsedOrZero(candidates[j])
+	})
+	return candidates[0]
+}
+
+func quotaRemainingOrZero(a *account.Account) int64 {
+	if !a.HasQuotaRem {
+		return 0
+	}
+	return a.QuotaRemaining
+}
+func lastUsedOrZero(a *account.Account) int64 {
+	if !a.HasLastUsed {
+		return 0
+	}
+	return a.LastUsedAt
+}
+
+func p2cSelect(candidates []*account.Account) *account.Account {
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	a := candidates[rng.Intn(len(candidates))]
+	b := candidates[rng.Intn(len(candidates))]
+	qa := quotaRemainingOrZero(a)
+	qb := quotaRemainingOrZero(b)
+	if qb > qa {
+		return b
+	}
+	if qa > qb {
+		return a
+	}
+	la := lastUsedOrZero(a)
+	lb := lastUsedOrZero(b)
+	if la <= lb {
+		return a
+	}
+	return b
+}
+
+// ProxyState is the shared proxy state: account pool + rate limiter + sticky + counter.
+type ProxyState struct {
+	DB             *db.Db
+	RateLimiter    *RateLimitTracker
+	Sticky         *StickySessions
+	requestCounter muCounter
+}
+
+type muCounter struct {
+	mu sync.Mutex
+	n  uint64
+}
+
+func (c *muCounter) Next() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return c.n
+}
+
+func NewProxyState(d *db.Db) *ProxyState {
+	return &ProxyState{
+		DB:          d,
+		RateLimiter: NewRateLimitTracker(),
+		Sticky:      NewStickySessions(),
+	}
+}
+
+func (s *ProxyState) NextRequestN() uint64 { return s.requestCounter.Next() }
+
+// itoaInt64 is a small helper to avoid strconv in hot paths.
+func itoaInt64(v int64) string {
+	if v == 0 {
+		return "0"
+	}
+	neg := false
+	if v < 0 {
+		neg = true
+		v = -v
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}

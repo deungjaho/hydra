@@ -1,0 +1,12 @@
+# Binaries (root-level only)
+/hydra
+/tmp/
+*.exe
+
+# OS
+.DS_Store
+
+# Editor
+*.swp
+*.swo
+*~
