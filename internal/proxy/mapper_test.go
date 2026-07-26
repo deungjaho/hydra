@@ -737,3 +737,25 @@ func TestSortStrings(t *testing.T) {
 	}
 }
 
+func TestMaxOutputTokensCap(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int64
+	}{
+		{"claude-sonnet-4-6", 64000},
+		{"claude-opus-4-6-thinking", 64000},
+		{"Claude-Sonnet-4-6", 64000}, // case insensitive
+		{"gemini-3-pro", 65536},
+		{"gemini-2.5-flash", 65536},
+		{"gpt-4", 65536},
+		{"unknown-model", 65536},
+	}
+	for _, tt := range tests {
+		got := maxOutputTokensCap(tt.model)
+		if got != tt.want {
+			t.Errorf("maxOutputTokensCap(%q) = %d, want %d",
+				tt.model, got, tt.want)
+		}
+	}
+}
+

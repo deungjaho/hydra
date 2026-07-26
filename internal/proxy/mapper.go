@@ -37,6 +37,20 @@ var SupportedModels = []string{
 //  1. Exact alias lookup (handles deprecated/legacy names → current model).
 //  2. gemini-* / claude-* passthrough (supports unreleased model IDs).
 //  3. Unknown → passthrough as-is (lets the upstream reject if invalid).
+// maxOutputTokensCap returns the maximum output tokens the upstream
+// streaming endpoint accepts for a given model. The non-streaming
+// endpoint silently caps values above this limit, but the streaming
+// endpoint returns 400 INVALID_ARGUMENT, so we cap proactively.
+func maxOutputTokensCap(model string) int64 {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "claude-"):
+		return 64000
+	default:
+		return 65536
+	}
+}
+
 func MapModel(openaiModel string) string {
 	m := strings.ToLower(strings.TrimSpace(openaiModel))
 	switch m {
@@ -129,14 +143,21 @@ func TransformRequest(openaiReq map[string]any, projectID, sessionID string, req
 		}
 	}
 
+	// Cap maxOutputTokens to the model's upstream limit. The streaming
+	// endpoint rejects values above this limit with 400 INVALID_ARGUMENT.
+	cap := maxOutputTokensCap(mappedModel)
+	maxOut := toInt64(orDefault(openaiReq, "max_tokens", 65536), 65536)
+	if maxOut > cap {
+		maxOut = cap
+	}
+
 	genConfig := map[string]any{
 		"temperature":     orDefault(openaiReq, "temperature", 1.0),
 		"topP":            orDefault(openaiReq, "top_p", 1.0),
 		"topK":            40,
-		"maxOutputTokens": orDefault(openaiReq, "max_tokens", 65536),
+		"maxOutputTokens": maxOut,
 	}
 	if isThinkingModel(mappedModel) {
-		maxOut := toInt64(orDefault(openaiReq, "max_tokens", 65536), 65536)
 		// thinkingBudget must be < maxOutputTokens (Anthropic requirement).
 		var budget int64 = 10000
 		if budget >= maxOut {

@@ -56,7 +56,12 @@ func AnthropicTransformRequest(req map[string]any, projectID, sessionID string, 
 	}
 
 	// --- generationConfig ---
+	// Cap maxOutputTokens to the model's upstream limit. The streaming
+	// endpoint rejects values above this limit with 400 INVALID_ARGUMENT.
 	maxTokens := uint64Or(req, "max_tokens", 8192)
+	if cap := maxOutputTokensCap(mappedModel); maxTokens > uint64(cap) {
+		maxTokens = uint64(cap)
+	}
 	genConfig := map[string]any{
 		"temperature":     orDefault(req, "temperature", 1.0),
 		"topP":            orDefault(req, "top_p", 1.0),
