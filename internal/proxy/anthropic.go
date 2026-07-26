@@ -327,6 +327,31 @@ func transformToolAnthropic(tool map[string]any) map[string]any {
 }
 
 func normalizeSchemaTypesAnthropic(schema map[string]any) {
+	// OpenAI/JSON Schema allows type to be an array like
+	// ["string","null"] for nullable fields. Gemini proto requires a
+	// single type string. Convert array → first non-null type +
+	// nullable: true.
+	if typeArr, ok := schema["type"].([]any); ok {
+		var primary string
+		nullable := false
+		for _, tAny := range typeArr {
+			t, _ := tAny.(string)
+			if t == "null" {
+				nullable = true
+				continue
+			}
+			if primary == "" {
+				primary = t
+			}
+		}
+		if primary == "" {
+			primary = "string"
+		}
+		schema["type"] = primary
+		if nullable {
+			schema["nullable"] = true
+		}
+	}
 	if t, ok := schema["type"].(string); ok {
 		switch t {
 		case "object":
