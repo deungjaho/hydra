@@ -135,9 +135,24 @@ func TransformRequest(openaiReq map[string]any, projectID, sessionID string, req
 		"maxOutputTokens": orDefault(openaiReq, "max_tokens", 65536),
 	}
 	if isThinkingModel(mappedModel) {
+		maxOut := int64(orDefault(openaiReq, "max_tokens", 65536).(float64))
+		// thinkingBudget must be < maxOutputTokens (Anthropic requirement).
+		var budget int64 = 10000
+		if budget >= maxOut {
+			if maxOut > 384 {
+				budget = maxOut - 256
+			} else if maxOut > 256 {
+				budget = 128
+			} else {
+				budget = maxOut / 2
+				if budget < 1 {
+					budget = 1
+				}
+			}
+		}
 		genConfig["thinkingConfig"] = map[string]any{
 			"includeThoughts": true,
-			"thinkingBudget":  10000,
+			"thinkingBudget":  budget,
 		}
 	}
 	requestBody["generationConfig"] = genConfig

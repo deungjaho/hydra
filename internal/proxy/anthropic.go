@@ -77,6 +77,17 @@ func AnthropicTransformRequest(req map[string]any, projectID, sessionID string, 
 				budget = b
 			}
 		}
+		// Ensure budget < maxOutputTokens (Anthropic requirement).
+		if budget >= maxTokens {
+			if maxTokens > 256 {
+				budget = maxTokens - 256
+			} else {
+				budget = 128
+			}
+		}
+		if budget < 128 {
+			budget = 128
+		}
 		genConfig["thinkingConfig"] = map[string]any{
 			"includeThoughts": true,
 			"thinkingBudget":  budget,
