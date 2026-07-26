@@ -267,7 +267,12 @@ func parseSummary(body string) (string, []QuotaWindowInfo) {
 //
 // If monitored is non-empty, only those models are checked. If monitored is
 // empty, all models in modelPercentages are checked.
-func ComputeProtectedModels(current []string, modelPercentages map[string]int32, monitored []string, threshold int32) []string {
+func ComputeProtectedModels(
+	current []string,
+	modelPercentages map[string]int32,
+	monitored []string,
+	threshold int32,
+) []string {
 	out := append([]string{}, current...)
 	check := monitored
 	if len(check) == 0 {

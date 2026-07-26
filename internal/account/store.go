@@ -67,13 +67,17 @@ func AddAccount(d *db.Db, email, accessToken, refreshToken, projectID string, ex
 			id = existingID
 			if projectID == "" {
 				_, err := conn.Exec(
-					`UPDATE accounts SET access_token = ?, refresh_token = ?, expires_at = ?, last_error = NULL, disabled = 0 WHERE id = ?`,
+				`UPDATE accounts SET access_token = ?, refresh_token = ?, `+
+					`expires_at = ?, last_error = NULL, `+
+					`disabled = 0 WHERE id = ?`,
 					accessToken, refreshToken, expiresAt, existingID,
 				)
 				return err
 			}
 			_, err := conn.Exec(
-				`UPDATE accounts SET access_token = ?, refresh_token = ?, project_id = COALESCE(?, project_id), expires_at = ?, last_error = NULL, disabled = 0 WHERE id = ?`,
+				`UPDATE accounts SET access_token = ?, refresh_token = ?, `+
+					`project_id = COALESCE(?, project_id), expires_at = ?, `+
+					`last_error = NULL, disabled = 0 WHERE id = ?`,
 				accessToken, refreshToken, projectID, expiresAt, existingID,
 			)
 			return err
@@ -147,7 +151,9 @@ func UpdateTokens(d *db.Db, id int64, accessToken string, expiresAt int64, proje
 			return err
 		}
 		_, err := conn.Exec(
-			`UPDATE accounts SET access_token = ?, expires_at = ?, project_id = COALESCE(?, project_id), last_error = NULL WHERE id = ?`,
+			`UPDATE accounts SET access_token = ?, expires_at = ?, `+
+				`project_id = COALESCE(?, project_id), `+
+				`last_error = NULL WHERE id = ?`,
 			accessToken, expiresAt, projectID, id,
 		)
 		return err
@@ -155,7 +161,12 @@ func UpdateTokens(d *db.Db, id int64, accessToken string, expiresAt int64, proje
 }
 
 // UpdateQuota persists freshly fetched quota data.
-func UpdateQuota(d *db.Db, id int64, quotaJSON, quotaSummary string, maxPercentage int64, hasMax bool, protected []string) error {
+func UpdateQuota(
+	d *db.Db, id int64,
+	quotaJSON, quotaSummary string,
+	maxPercentage int64, hasMax bool,
+	protected []string,
+) error {
 	protectedJSON, _ := json.Marshal(protected)
 	if protectedJSON == nil {
 		protectedJSON = []byte("[]")

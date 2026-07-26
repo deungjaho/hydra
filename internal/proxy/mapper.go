@@ -212,9 +212,6 @@ func TransformRequest(openaiReq map[string]any, projectID, sessionID string, req
 	}
 }
 
-// IsThinkingModelPub is a public wrapper for use by the Anthropic mapper.
-func IsThinkingModelPub(model string) bool { return isThinkingModel(model) }
-
 func isThinkingModel(model string) bool {
 	return strings.Contains(model, "-thinking") ||
 		(strings.HasPrefix(model, "gemini-") && (strings.Contains(model, "-pro") || strings.Contains(model, "gemini-3")))

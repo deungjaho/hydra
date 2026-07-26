@@ -65,7 +65,7 @@ func AnthropicTransformRequest(req map[string]any, projectID, sessionID string, 
 	}
 
 	// thinkingConfig
-	isThinking := IsThinkingModelPub(mappedModel)
+	isThinking := isThinkingModel(mappedModel)
 	if thinkingAny, ok := req["thinking"].(map[string]any); ok {
 		if t, _ := thinkingAny["type"].(string); t == "enabled" || t == "adaptive" {
 			isThinking = true

@@ -118,7 +118,11 @@ func newAccountsCmd() *cobra.Command {
 					}
 				}
 			}
-			id, err := account.AddAccount(d, result.Email, result.AccessToken, result.RefreshToken, result.ProjectID, result.ExpiresAt)
+			id, err := account.AddAccount(
+				d, result.Email,
+				result.AccessToken, result.RefreshToken,
+				result.ProjectID, result.ExpiresAt,
+			)
 			if err != nil {
 				return err
 			}
@@ -138,9 +142,16 @@ func newAccountsCmd() *cobra.Command {
 			}
 			var protected []string
 			if cfg.QuotaProtection.Enabled {
-				protected = account.ComputeProtectedModels(nil, fetched.ModelPercentages, cfg.QuotaProtection.MonitoredModels, int32(cfg.QuotaProtection.ThresholdPercentage))
+				protected = account.ComputeProtectedModels(
+					nil, fetched.ModelPercentages,
+					cfg.QuotaProtection.MonitoredModels,
+					int32(cfg.QuotaProtection.ThresholdPercentage))
 			}
-			_ = account.UpdateQuota(d, id, fetched.JSONBlob, fetched.SummaryBlob, fetched.MaxPercentage, fetched.HasMaxPercentage, protected)
+			_ = account.UpdateQuota(
+				d, id, fetched.JSONBlob, fetched.SummaryBlob,
+				fetched.MaxPercentage, fetched.HasMaxPercentage,
+				protected,
+			)
 			maxPct := int64(-1)
 			if fetched.HasMaxPercentage {
 				maxPct = fetched.MaxPercentage
@@ -410,8 +421,10 @@ func newUsageCmd() *cobra.Command {
 				hitRate = float64(totalCached) / float64(totalPrompt) * 100.0
 			}
 			fmt.Printf("Usage over `%s`:\n", window)
-			fmt.Printf("  total: %d requests, %d prompt tok, %d completion tok, %d cached tok (%.1f%% hit), %d thinking tok, $%.4f\n",
-				totalReqs, totalPrompt, totalCompl, totalCached, hitRate, totalThought, float64(totalCost)/1e6)
+			fmt.Printf("  total: %d requests, %d prompt tok, %d completion tok, "+
+				"%d cached tok (%.1f%% hit), %d thinking tok, $%.4f\n",
+				totalReqs, totalPrompt, totalCompl, totalCached, hitRate,
+				totalThought, float64(totalCost)/1e6)
 			fmt.Println()
 			fmt.Println("By model:")
 			fmt.Printf("%-28s %-6s %-10s %-10s %-10s %-10s %-10s\n",

@@ -561,7 +561,12 @@ func (m tuiModel) refreshQuota() tea.Msg {
 		if protectionEnabled {
 			newProtected = account.ComputeProtectedModels(a.ProtectedModels, fetched.ModelPercentages, monitored, threshold)
 		}
-		_ = account.UpdateQuota(m.db, a.ID, fetched.JSONBlob, fetched.SummaryBlob, fetched.MaxPercentage, fetched.HasMaxPercentage, newProtected)
+		_ = account.UpdateQuota(
+			m.db, a.ID,
+			fetched.JSONBlob, fetched.SummaryBlob,
+			fetched.MaxPercentage, fetched.HasMaxPercentage,
+			newProtected,
+		)
 		ok++
 	}
 	return refreshMsg{text: fmt.Sprintf("Quota refreshed: %d ok, %d errors", ok, errs)}
@@ -802,10 +807,18 @@ func (m tuiModel) renderLogDetailOverlay() string {
 
 	// Token breakdown.
 	content.WriteString("\n  Tokens\n")
-	content.WriteString(fmt.Sprintf("    Prompt:     %s\n", blueStyle.Render(fmt.Sprintf("%d", orInt64(l.HasPromptTokens, l.PromptTokens, 0)))))
-	content.WriteString(fmt.Sprintf("    Completion: %s\n", magentaStyle.Render(fmt.Sprintf("%d", orInt64(l.HasCompletion, l.CompletionTokens, 0)))))
-	content.WriteString(fmt.Sprintf("    Cached:     %s\n", greenStyle.Render(fmt.Sprintf("%d", orInt64(l.HasCached, l.CachedTokens, 0)))))
-	content.WriteString(fmt.Sprintf("    Thinking:   %s\n", yellowStyle.Render(fmt.Sprintf("%d", orInt64(l.HasThought, l.ThoughtTokens, 0)))))
+	prompt := blueStyle.Render(
+		fmt.Sprintf("%d", orInt64(l.HasPromptTokens, l.PromptTokens, 0)))
+	compl := magentaStyle.Render(
+		fmt.Sprintf("%d", orInt64(l.HasCompletion, l.CompletionTokens, 0)))
+	cached := greenStyle.Render(
+		fmt.Sprintf("%d", orInt64(l.HasCached, l.CachedTokens, 0)))
+	think := yellowStyle.Render(
+		fmt.Sprintf("%d", orInt64(l.HasThought, l.ThoughtTokens, 0)))
+	content.WriteString(fmt.Sprintf("    Prompt:     %s\n", prompt))
+	content.WriteString(fmt.Sprintf("    Completion: %s\n", compl))
+	content.WriteString(fmt.Sprintf("    Cached:     %s\n", cached))
+	content.WriteString(fmt.Sprintf("    Thinking:   %s\n", think))
 
 	// Cost.
 	cost := "-"
@@ -1166,7 +1179,9 @@ func (m tuiModel) renderLogs() string {
 		b.WriteString(line + "\n")
 	}
 	if len(m.logs) > cap {
-		b.WriteString(grayStyle.Render(fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll · Space detail", m.logScroll+1, end, len(m.logs))))
+		scroll := fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll · Space detail",
+			m.logScroll+1, end, len(m.logs))
+		b.WriteString(grayStyle.Render(scroll))
 	}
 	return b.String()
 }
@@ -1274,15 +1289,20 @@ func (m tuiModel) renderStatus() string {
 		prot = "on"
 		protColor = greenStyle
 	}
-	b.WriteString(fmt.Sprintf("    Protection:   %s %s\n", protColor.Render(prot), grayStyle.Render(fmt.Sprintf("(threshold=%d%%)", cfg.QuotaProtection.ThresholdPercentage))))
+	thr := grayStyle.Render(
+		fmt.Sprintf("(threshold=%d%%)", cfg.QuotaProtection.ThresholdPercentage))
+	b.WriteString(fmt.Sprintf("    Protection:   %s %s\n", protColor.Render(prot), thr))
 	b.WriteString("\n  Accounts\n")
-	b.WriteString(fmt.Sprintf("    Active:       %s / %d\n", greenStyle.Render(fmt.Sprintf("%d", m.stats.activeAccounts)), m.stats.accountCount))
+	active := greenStyle.Render(fmt.Sprintf("%d", m.stats.activeAccounts))
+	b.WriteString(fmt.Sprintf("    Active:       %s / %d\n", active, m.stats.accountCount))
 	b.WriteString(fmt.Sprintf("    Disabled:     %s\n", redStyle.Render(fmt.Sprintf("%d", m.stats.disabledAccounts))))
 	b.WriteString(fmt.Sprintf("\n  Usage (%s)\n", m.statusWindow))
 	b.WriteString(fmt.Sprintf("    Requests:     %d\n", wReqs))
 	b.WriteString(fmt.Sprintf("    Prompt:       %s\n", blueStyle.Render(fmt.Sprintf("%d", wPrompt))))
 	b.WriteString(fmt.Sprintf("    Completion:   %s\n", magentaStyle.Render(fmt.Sprintf("%d", wCompl))))
-	b.WriteString(fmt.Sprintf("    Cached:       %s %s\n", greenStyle.Render(fmt.Sprintf("%d", wCached)), grayStyle.Render(fmt.Sprintf("(%.1f%% hit)", wHit))))
+	cachedS := greenStyle.Render(fmt.Sprintf("%d", wCached))
+	hitS := grayStyle.Render(fmt.Sprintf("(%.1f%% hit)", wHit))
+	b.WriteString(fmt.Sprintf("    Cached:       %s %s\n", cachedS, hitS))
 	b.WriteString(fmt.Sprintf("    Thinking:     %s\n", yellowStyle.Render(fmt.Sprintf("%d", wThought))))
 	b.WriteString(fmt.Sprintf("    Cost:         %s\n", greenStyle.Render(fmt.Sprintf("$%.4f", wCost))))
 

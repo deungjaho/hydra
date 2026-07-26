@@ -1,12 +1,24 @@
-# Binaries (root-level only)
+# Binaries
 /hydra
 /tmp/
 *.exe
 
+# Databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 # OS
 .DS_Store
+Thumbs.db
 
 # Editor
 *.swp
 *.swo
 *~
+.vscode/
+.idea/
+
+# Local config (may contain secrets)
+*.env

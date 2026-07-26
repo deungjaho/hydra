@@ -74,14 +74,6 @@ func (d *Db) migrate() error {
             client_ip   TEXT,
             error       TEXT
         );
-        CREATE TABLE IF NOT EXISTS token_stats (
-            ts          INTEGER NOT NULL,
-            account_id  INTEGER,
-            model       TEXT,
-            prompt_tokens   INTEGER NOT NULL DEFAULT 0,
-            completion_tokens INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (ts, account_id, model)
-        );
         CREATE TABLE IF NOT EXISTS api_keys (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             key         TEXT NOT NULL UNIQUE,

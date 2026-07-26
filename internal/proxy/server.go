@@ -521,7 +521,12 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 
 // ensureFreshToken refreshes the access token if needed. On failure it writes
 // the error response and returns ok=false.
-func (s *ProxyServer) ensureFreshToken(acc *account.Account, mappedModel, originalModel, clientIP string, apiKeyID *int64, w http.ResponseWriter) (string, bool) {
+func (s *ProxyServer) ensureFreshToken(
+	acc *account.Account,
+	mappedModel, originalModel, clientIP string,
+	apiKeyID *int64,
+	w http.ResponseWriter,
+) (string, bool) {
 	if !account.NeedsRefresh(acc.ExpiresAt) {
 		return acc.AccessToken, true
 	}
@@ -624,7 +629,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // streamOpenAISSE transforms a Gemini SSE byte stream into an OpenAI SSE byte
 // stream and writes it to w.
-func (s *ProxyServer) streamOpenAISSE(w http.ResponseWriter, body io.Reader, chatID string, created int64, model string, accountID int64, apiKeyID *int64, clientIP string) {
+func (s *ProxyServer) streamOpenAISSE(
+	w http.ResponseWriter,
+	body io.Reader,
+	chatID string,
+	created int64,
+	model string,
+	accountID int64,
+	apiKeyID *int64,
+	clientIP string,
+) {
 	flusher, _ := w.(http.Flusher)
 	setSSEHeaders(w)
 	if flusher != nil {
@@ -789,7 +803,14 @@ func buildOpenAISSEChunk(geminiJSON map[string]any, chatID string, created int64
 
 // streamAnthropicSSE transforms a Gemini SSE byte stream into an Anthropic SSE
 // byte stream and writes it to w.
-func (s *ProxyServer) streamAnthropicSSE(w http.ResponseWriter, body io.Reader, model string, accountID int64, apiKeyID *int64, clientIP string) {
+func (s *ProxyServer) streamAnthropicSSE(
+	w http.ResponseWriter,
+	body io.Reader,
+	model string,
+	accountID int64,
+	apiKeyID *int64,
+	clientIP string,
+) {
 	flusher, _ := w.(http.Flusher)
 	setSSEHeaders(w)
 	if flusher != nil {
@@ -950,7 +971,12 @@ func RefreshAllQuotas(s *ProxyServer) error {
 				threshold,
 			)
 		}
-		if err := account.UpdateQuota(s.State.DB, acc.ID, fetched.JSONBlob, fetched.SummaryBlob, fetched.MaxPercentage, fetched.HasMaxPercentage, newProtected); err != nil {
+		if err := account.UpdateQuota(
+			s.State.DB, acc.ID,
+			fetched.JSONBlob, fetched.SummaryBlob,
+			fetched.MaxPercentage, fetched.HasMaxPercentage,
+			newProtected,
+		); err != nil {
 			log.Printf("persist quota failed for %s: %v", acc.Email, err)
 			continue
 		}

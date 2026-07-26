@@ -14,7 +14,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// Antigravity's hardcoded Google OAuth client (same as the desktop app).
+// OAuth credentials for Antigravity's Google OAuth client.
+//
+// These are the same client ID and secret embedded in the Antigravity
+// desktop application. OAuth desktop clients use a "public" client type
+// where the secret is not truly confidential — it ships in the client
+// binary and cannot be kept private. Hydra reuses these credentials to
+// obtain OAuth tokens that work with the same upstream API.
+//
+// If you want to use your own Google OAuth client instead, replace these
+// constants or make them configurable.
 const (
 	oauthClientID     = "OAUTH_CLIENT_ID"
 	oauthClientSecret = "OAUTH_CLIENT_SECRET"
@@ -83,7 +92,8 @@ func RunOAuthFlow(client *http.Client) (*AuthResult, error) {
 	fmt.Println()
 	fmt.Println("2. Sign in with your Google account and approve the permissions.")
 	fmt.Println()
-	fmt.Printf("3. After approval the browser will redirect to a URL like:\n   http://localhost/?code=4/0Axx...&scope=...&state=%s\n", state)
+	fmt.Printf("3. After approval the browser will redirect to a URL like:\n"+
+		"   http://localhost/?code=4/0Axx...&scope=...&state=%s\n", state)
 	fmt.Println("   The page won't load — that's expected. Copy the ENTIRE URL from")
 	fmt.Println("   the browser address bar and paste it below.")
 	fmt.Println()
@@ -108,7 +118,8 @@ func RunOAuthFlow(client *http.Client) (*AuthResult, error) {
 	projectID, _ := FetchProjectID(client, tokenResp.AccessToken)
 
 	if tokenResp.RefreshToken == "" {
-		return nil, fmt.Errorf("oauth: Google did not return a refresh_token. Revoke access at https://myaccount.google.com/permissions and try again.")
+		return nil, fmt.Errorf("oauth: Google did not return a refresh_token. "+
+			"Revoke access at https://myaccount.google.com/permissions and try again.")
 	}
 
 	return &AuthResult{
@@ -253,7 +264,9 @@ func extractCode(callbackURL, expectedState string) (string, error) {
 		return "", fmt.Errorf("oauth: no `code` parameter found in the pasted URL")
 	}
 	if state != "" && state != expectedState {
-		return "", fmt.Errorf("oauth: state mismatch (expected %s, got %s). This may be a stale paste — restart the command.", expectedState, state)
+		return "", fmt.Errorf("oauth: state mismatch (expected %s, got %s). "+
+			"This may be a stale paste — restart the command.",
+			expectedState, state)
 	}
 	return code, nil
 }

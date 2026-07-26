@@ -62,7 +62,13 @@ func SendRequest(client *http.Client, accessToken, projectID string, body []byte
 	return resp, nil
 }
 
-func doSend(client *http.Client, urlStr, accessToken, projectID string, body []byte, machineID, sessionID string, includeProjectHeader bool) (*http.Response, error) {
+func doSend(
+	client *http.Client,
+	urlStr, accessToken, projectID string,
+	body []byte,
+	machineID, sessionID string,
+	includeProjectHeader bool,
+) (*http.Response, error) {
 	req, err := http.NewRequest("POST", urlStr, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
