@@ -22,11 +22,17 @@ import (
 // binary and cannot be kept private. Hydra reuses these credentials to
 // obtain OAuth tokens that work with the same upstream API.
 //
-// If you want to use your own Google OAuth client instead, replace these
-// constants or make them configurable.
+// To use your own Google OAuth client, set the environment variables:
+//
+//	HYDRA_OAUTH_CLIENT_ID
+//	HYDRA_OAUTH_CLIENT_SECRET
+//
+// If Google ever revokes the default client ID, users can self-serve
+// by creating their own OAuth desktop client in Google Cloud Console
+// and pointing Hydra at it via these env vars.
 const (
-	oauthClientID     = "OAUTH_CLIENT_ID"
-	oauthClientSecret = "OAUTH_CLIENT_SECRET"
+	defaultOAuthClientID     = "OAUTH_CLIENT_ID"
+	defaultOAuthClientSecret = "OAUTH_CLIENT_SECRET"
 
 	oauthAuthURL         = "https://accounts.google.com/o/oauth2/v2/auth"
 	oauthTokenURL        = "https://oauth2.googleapis.com/token"
@@ -36,6 +42,24 @@ const (
 	oauthRedirectURI     = "http://localhost"
 	oauthRefreshSkew int64 = 900
 )
+
+// oauthClientID returns the OAuth client ID, preferring the
+// HYDRA_OAUTH_CLIENT_ID env var over the built-in default.
+func oauthClientID() string {
+	if v := os.Getenv("HYDRA_OAUTH_CLIENT_ID"); v != "" {
+		return v
+	}
+	return defaultOAuthClientID
+}
+
+// oauthClientSecret returns the OAuth client secret, preferring the
+// HYDRA_OAUTH_CLIENT_SECRET env var over the built-in default.
+func oauthClientSecret() string {
+	if v := os.Getenv("HYDRA_OAUTH_CLIENT_SECRET"); v != "" {
+		return v
+	}
+	return defaultOAuthClientSecret
+}
 
 const oauthScopes = "openid " +
 	"https://www.googleapis.com/auth/cloud-platform " +
@@ -74,7 +98,7 @@ func RunOAuthFlow(client *http.Client) (*AuthResult, error) {
 	state := strings.ReplaceAll(uuid.NewString(), "-", "")
 
 	q := url.Values{}
-	q.Set("client_id", oauthClientID)
+	q.Set("client_id", oauthClientID())
 	q.Set("redirect_uri", oauthRedirectURI)
 	q.Set("response_type", "code")
 	q.Set("scope", oauthScopes)
@@ -133,8 +157,8 @@ func RunOAuthFlow(client *http.Client) (*AuthResult, error) {
 
 func exchangeCode(client *http.Client, code string) (*tokenResponse, error) {
 	form := url.Values{
-		"client_id":     {oauthClientID},
-		"client_secret": {oauthClientSecret},
+		"client_id":     {oauthClientID()},
+		"client_secret": {oauthClientSecret()},
 		"code":          {code},
 		"redirect_uri":  {oauthRedirectURI},
 		"grant_type":    {"authorization_code"},
@@ -214,8 +238,8 @@ func FetchProjectID(client *http.Client, accessToken string) (string, error) {
 // Returns (new_access_token, new_expires_at).
 func RefreshToken(client *http.Client, refreshToken string) (string, int64, error) {
 	form := url.Values{
-		"client_id":     {oauthClientID},
-		"client_secret": {oauthClientSecret},
+		"client_id":     {oauthClientID()},
+		"client_secret": {oauthClientSecret()},
 		"refresh_token": {refreshToken},
 		"grant_type":    {"refresh_token"},
 	}
