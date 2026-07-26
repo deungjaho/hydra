@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
@@ -36,8 +37,6 @@ var (
 	panelTitleActive = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("36"))
-	panelTitleInactive = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("245"))
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
 			Background(lipgloss.Color("236"))
@@ -53,6 +52,9 @@ var (
 	statusBarStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("252"))
+	inputPromptStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("36"))
 )
 
 // ---------------------------------------------------------------------------
@@ -85,6 +87,7 @@ type stats struct {
 	thoughtTokens    int64
 	totalCost        float64
 	modelUsage       map[string]int
+	modelCost        map[string]float64
 }
 
 func computeStats(accounts []*account.Account, logs []*account.RequestLog) stats {
@@ -125,6 +128,12 @@ func computeStats(accounts []*account.Account, logs []*account.RequestLog) stats
 				s.modelUsage = make(map[string]int)
 			}
 			s.modelUsage[l.Model]++
+			if l.HasCost {
+				if s.modelCost == nil {
+					s.modelCost = make(map[string]float64)
+				}
+				s.modelCost[l.Model] += l.CostUSD
+			}
 		}
 	}
 	return s
@@ -132,6 +141,14 @@ func computeStats(accounts []*account.Account, logs []*account.RequestLog) stats
 
 type refreshMsg struct{ text string }
 type tickMsg struct{}
+
+// inputMode tracks inline input state for TUI operations.
+type inputMode int
+
+const (
+	inputNone  inputMode = iota
+	inputAddKey           // typing label for new key
+)
 
 type tuiModel struct {
 	db         *db.Db
@@ -149,10 +166,19 @@ type tuiModel struct {
 	width      int
 	height     int
 	quitting   bool
+	// Inline input
+	inputMode inputMode
+	textInput textinput.Model
+	// Key detail view
+	showFullKey   string // non-empty = showing full key overlay
+	showFullKeyID int64
 }
 
 func newTUIModel(d *db.Db) tuiModel {
 	m := tuiModel{db: d}
+	ti := textinput.New()
+	ti.CharLimit = 50
+	m.textInput = ti
 	m.refreshData()
 	return m
 }
@@ -174,6 +200,20 @@ func (m tuiModel) Init() tea.Cmd {
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle input mode first — all keys go to the text input.
+	if m.inputMode != inputNone {
+		return m.handleInputMode(msg)
+	}
+	// Handle full-key overlay — any key dismisses it.
+	if m.showFullKey != "" {
+		if km, ok := msg.(tea.KeyMsg); ok {
+			_ = km
+			m.showFullKey = ""
+			m.showFullKeyID = 0
+		}
+		return m, nil
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -201,13 +241,52 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m tuiModel) handleInputMode(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			label := m.textInput.Value()
+			if label == "" {
+				m.statusMsg = "Label cannot be empty"
+				m.statusTime = time.Now()
+				m.inputMode = inputNone
+				m.textInput.Reset()
+				return m, nil
+			}
+			newKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			id, err := account.AddAPIKey(m.db, newKey, label)
+			if err != nil {
+				m.statusMsg = "Failed: " + err.Error()
+			} else {
+				m.statusMsg = fmt.Sprintf("Key #%d created: %s (label: %s)", id, newKey, label)
+			}
+			m.statusTime = time.Now()
+			m.inputMode = inputNone
+			m.textInput.Reset()
+			m.refreshData()
+			return m, nil
+		case "esc", "ctrl+c":
+			m.inputMode = inputNone
+			m.textInput.Reset()
+			m.statusMsg = "Cancelled"
+			m.statusTime = time.Now()
+			return m, nil
+		}
+		// Forward to text input.
+		var cmd tea.Cmd
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
 func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// Click on tab bar to switch tabs.
-	tabBarY := 1 // line 0 = title, line 1 = tabs
+	tabBarY := 1
 	if msg.Y == tabBarY && msg.Type == tea.MouseLeft {
 		x := 0
 		for i, name := range tabNames {
-			tabW := len(name) + 2 // padding
+			tabW := len(name) + 2
 			if msg.X >= x && msg.X < x+tabW {
 				m.setTab(tab(i))
 				return m, nil
@@ -221,7 +300,11 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	_ = key.NewBinding
 	switch k.String() {
-	case "q", "esc", "ctrl+c":
+	case "q", "ctrl+c":
+		m.quitting = true
+		return m, tea.Quit
+	case "esc":
+		// esc quits only if not in a sub-view
 		m.quitting = true
 		return m, tea.Quit
 	case "tab", "l", "ctrl+f":
@@ -265,23 +348,42 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Run `hydra accounts add` in a separate terminal to bind an account."
 			m.statusTime = time.Now()
 		} else if m.tab == tabKeys {
-			m.statusMsg = "Run `hydra key add <label>` in a separate terminal to add a key."
-			m.statusTime = time.Now()
+			// Enter inline input mode for key label.
+			m.inputMode = inputAddKey
+			m.textInput.Reset()
+			m.textInput.Focus()
+			m.textInput.Prompt = "Label: "
+			m.statusMsg = ""
+			return m, textinput.Blink
 		}
 	case "D":
 		m.handleDelete()
 	case "e":
 		m.handleToggle()
+	case "K":
+		// Rotate selected key (Keys tab) — generates new key string.
+		if m.tab == tabKeys && m.cursor < len(m.keys) {
+			k := m.keys[m.cursor]
+			newKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			if err := account.RotateAPIKey(m.db, k.ID, newKey); err != nil {
+				m.statusMsg = "Rotate failed: " + err.Error()
+			} else {
+				m.statusMsg = fmt.Sprintf("Key #%d rotated: %s", k.ID, newKey)
+			}
+			m.statusTime = time.Now()
+			m.refreshData()
+		}
+	case "s":
+		// Show full key (Keys tab).
+		if m.tab == tabKeys && m.cursor < len(m.keys) {
+			k := m.keys[m.cursor]
+			m.showFullKey = k.Key
+			m.showFullKeyID = k.ID
+		}
 	case "m":
 		if m.tab == tabStatus {
 			m.cycleSchedulingMode()
 		}
-	case "K":
-		if m.tab == tabStatus {
-			m.rotateAPIKey()
-		}
-	case "enter", " ":
-		// Could open detail view in the future.
 	}
 	return m, nil
 }
@@ -302,7 +404,7 @@ func (m *tuiModel) handleDelete() {
 		if m.cursor > 0 {
 			m.cursor--
 		}
-		m.statusMsg = fmt.Sprintf("Removed API key #%d", k.ID)
+		m.statusMsg = fmt.Sprintf("Removed API key #%d (%s)", k.ID, k.Label)
 		m.statusTime = time.Now()
 		m.refreshData()
 	}
@@ -354,23 +456,6 @@ func (m *tuiModel) cycleSchedulingMode() {
 		m.statusMsg = "Save failed: " + err.Error()
 	} else {
 		m.statusMsg = fmt.Sprintf("Scheduling -> %s (restart proxy to apply)", modeName)
-	}
-	m.statusTime = time.Now()
-}
-
-func (m *tuiModel) rotateAPIKey() {
-	cfg, err := config.Load()
-	if err != nil {
-		m.statusMsg = err.Error()
-		m.statusTime = time.Now()
-		return
-	}
-	cfg.Proxy.APIKey = "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	newKey := cfg.Proxy.APIKey
-	if err := cfg.Save(); err != nil {
-		m.statusMsg = "Save failed: " + err.Error()
-	} else {
-		m.statusMsg = fmt.Sprintf("API key rotated: %s (restart proxy to apply)", newKey)
 	}
 	m.statusTime = time.Now()
 }
@@ -511,13 +596,10 @@ func (m *tuiModel) clampLogScroll() {
 	}
 }
 
-// bodyHeight returns the number of rows available for content,
-// accounting for header (2 lines), panel border (2 lines), and footer (2 lines).
 func (m tuiModel) bodyHeight() int {
 	if m.height == 0 {
-		return 20 // fallback for non-terminal mode
+		return 20
 	}
-	// title(1) + tabs(1) + summary(1) + border-top(1) + border-bottom(1) + help(1) + status(1) = 7
 	h := m.height - 7
 	if h < 5 {
 		h = 5
@@ -533,12 +615,42 @@ func (m tuiModel) View() string {
 	if m.quitting {
 		return ""
 	}
+	// Full-key overlay takes priority.
+	if m.showFullKey != "" {
+		return m.renderFullKeyOverlay()
+	}
+	// Input mode overlay.
+	if m.inputMode == inputAddKey {
+		var b strings.Builder
+		b.WriteString(m.renderHeader())
+		b.WriteString("\n")
+		b.WriteString(panelBorder.Render(
+			panelTitleActive.Render("Add API Key") + "\n\n" +
+				m.textInput.View() + "\n\n" +
+				grayStyle.Render("Enter to confirm · Esc to cancel")))
+		b.WriteString("\n")
+		return b.String()
+	}
+
 	var b strings.Builder
 	b.WriteString(m.renderHeader())
 	b.WriteString("\n")
 	b.WriteString(m.renderBody())
 	b.WriteString("\n")
 	b.WriteString(m.renderFooter())
+	return b.String()
+}
+
+func (m tuiModel) renderFullKeyOverlay() string {
+	var b strings.Builder
+	b.WriteString(m.renderHeader())
+	b.WriteString("\n")
+	content := panelTitleActive.Render(fmt.Sprintf("API Key #%d (full)", m.showFullKeyID)) + "\n\n" +
+		boldStyle.Render(m.showFullKey) + "\n\n" +
+		grayStyle.Render("Press any key to dismiss · Copy with your terminal's select")
+	b.WriteString(panelBorder.Render(content))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" any key = dismiss"))
 	return b.String()
 }
 
@@ -581,7 +693,6 @@ func (m tuiModel) renderBody() string {
 	case tabStatus:
 		content = m.renderStatus()
 	}
-	// Wrap content in a bordered panel.
 	return panelBorder.Render(content)
 }
 
@@ -643,14 +754,14 @@ func formatQuotaWindowStyled(w *account.QuotaWindow) string {
 func (m tuiModel) renderKeys() string {
 	if len(m.keys) == 0 {
 		return panelTitleActive.Render("API Keys") + "\n  " +
-			grayStyle.Render("No API keys. Run `hydra key add <label>` to create one.")
+			grayStyle.Render("No API keys. Press 'a' to create one, or run `hydra key add <label>`.")
 	}
 	usage, _ := account.UsageByKey(m.db, 0)
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("API Keys (%d)", len(m.keys))))
 	b.WriteString("\n")
-	header := fmt.Sprintf("  %-4s %-14s %-20s %-8s %-8s %-10s %-10s",
-		"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST")
+	header := fmt.Sprintf("  %-4s %-14s %-20s %-8s %-8s %-10s %-10s %-12s",
+		"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST", "CREATED")
 	b.WriteString(grayStyle.Render(header))
 	b.WriteString("\n")
 	for i, k := range m.keys {
@@ -672,8 +783,9 @@ func (m tuiModel) renderKeys() string {
 		if k.Disabled {
 			status = redStyle.Render("disabled")
 		}
-		row := fmt.Sprintf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f",
-			k.ID, k.Label, prefix, status, reqs, tokens, cost)
+		created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
+		row := fmt.Sprintf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s",
+			k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
 		if i == m.cursor {
 			b.WriteString(selectedStyle.Render(" " + row))
 		} else {
@@ -692,13 +804,27 @@ func (m tuiModel) renderLogs() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Recent Logs (%d)", len(m.logs))))
 	b.WriteString("\n")
-	cap := m.bodyHeight() - 2 // account for title + header
+	// Header row for consistency with other tabs.
+	header := fmt.Sprintf("  %-11s %-3s %-4s %-4s %-22s %-7s %-7s %s",
+		"TIME", "ST", "ACC", "KEY", "MODEL", "PROMPT", "COMPL", "COST/ERROR")
+	b.WriteString(grayStyle.Render(header))
+	b.WriteString("\n")
+	cap := m.bodyHeight() - 3 // title + header + scroll indicator
 	if cap < 1 {
 		cap = 1
 	}
 	end := m.logScroll + cap
 	if end > len(m.logs) {
 		end = len(m.logs)
+	}
+	// Build account ID → email map for context.
+	accMap := make(map[int64]string)
+	for _, a := range m.accounts {
+		accMap[a.ID] = a.Email
+	}
+	keyMap := make(map[int64]string)
+	for _, k := range m.keys {
+		keyMap[k.ID] = k.Label
 	}
 	for i := m.logScroll; i < end; i++ {
 		l := m.logs[i]
@@ -721,22 +847,55 @@ func (m tuiModel) renderLogs() string {
 		case strings.HasPrefix(model, "gemini-"):
 			modelColor = blueStyle
 		}
+		// Account context (abbreviated email).
+		accCtx := "-"
+		if l.HasAccountID {
+			if email, ok := accMap[l.AccountID]; ok {
+				if at := strings.Index(email, "@"); at > 0 {
+					accCtx = email[:at]
+				} else {
+					accCtx = email
+				}
+			} else {
+				accCtx = fmt.Sprintf("#%d", l.AccountID)
+			}
+		}
+		if len(accCtx) > 4 {
+			accCtx = accCtx[:4]
+		}
+		// Key context (label).
+		keyCtx := "-"
+		if l.HasAPIKeyID {
+			if label, ok := keyMap[l.APIKeyID]; ok {
+				keyCtx = label
+			} else {
+				keyCtx = fmt.Sprintf("#%d", l.APIKeyID)
+			}
+		}
+		if len(keyCtx) > 4 {
+			keyCtx = keyCtx[:4]
+		}
 		cost := "-"
 		if l.HasCost {
 			cost = fmt.Sprintf("$%.4f", l.CostUSD)
 		}
-		line := fmt.Sprintf("%-11s %-3s %-22s p:%d c:%d %s",
-			t, statusColor.Render(fmt.Sprintf("%d", l.Status)), modelColor.Render(fmt.Sprintf("%-22s", model)),
+		line := fmt.Sprintf("%-11s %-3s %-4s %-4s %-22s %-7d %-7d %s",
+			t, statusColor.Render(fmt.Sprintf("%d", l.Status)),
+			accCtx, keyCtx,
+			modelColor.Render(fmt.Sprintf("%-22s", model)),
 			orInt64(l.HasPromptTokens, l.PromptTokens, 0),
 			orInt64(l.HasCompletion, l.CompletionTokens, 0),
 			cost,
 		)
 		if l.HasError && l.Error != "" {
-			line += " " + redStyle.Render(l.Error)
+			errMsg := l.Error
+			if len(errMsg) > 30 {
+				errMsg = errMsg[:30] + "…"
+			}
+			line += " " + redStyle.Render(errMsg)
 		}
 		b.WriteString(line + "\n")
 	}
-	// Scroll indicator
 	if len(m.logs) > cap {
 		b.WriteString(grayStyle.Render(fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll", m.logScroll+1, end, len(m.logs))))
 	}
@@ -751,18 +910,18 @@ func (m tuiModel) renderModels() string {
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Models (%d)", len(m.models))))
 	b.WriteString("\n")
-	b.WriteString(grayStyle.Render(fmt.Sprintf("  %-4s %-34s %-10s %-10s", "#", "MODEL ID", "FAMILY", "REQS")))
+	// No # column, no FAMILY column — color coding is sufficient.
+	header := fmt.Sprintf("  %-34s %-10s %-12s",
+		"MODEL ID", "REQS", "COST")
+	b.WriteString(grayStyle.Render(header))
 	b.WriteString("\n")
 	for i, name := range m.models {
-		family := "other"
-		familyColor := grayStyle
+		modelColor := grayStyle
 		switch {
 		case strings.HasPrefix(name, "claude-"):
-			family = "claude"
-			familyColor = magentaStyle
+			modelColor = magentaStyle
 		case strings.HasPrefix(name, "gemini-"):
-			family = "gemini"
-			familyColor = blueStyle
+			modelColor = blueStyle
 		}
 		usage := 0
 		if m.stats.modelUsage != nil {
@@ -770,10 +929,16 @@ func (m tuiModel) renderModels() string {
 		}
 		usageStr := grayStyle.Render("0")
 		if usage > 0 {
-			usageStr = yellowStyle.Render(fmt.Sprintf("%d", usage))
+			usageStr = yellowStyle.Render(fmt.Sprintf("%-10d", usage))
 		}
-		row := fmt.Sprintf("%-4d %-34s %-10s %-10s",
-			i+1, familyColor.Render(name), familyColor.Render(family), usageStr)
+		costStr := grayStyle.Render("-")
+		if m.stats.modelCost != nil {
+			if c, ok := m.stats.modelCost[name]; ok && c > 0 {
+				costStr = greenStyle.Render(fmt.Sprintf("$%.4f", c))
+			}
+		}
+		row := fmt.Sprintf("%-34s %-10s %-12s",
+			modelColor.Render(fmt.Sprintf("%-34s", name)), usageStr, costStr)
 		if i == m.modelsCur {
 			b.WriteString(selectedStyle.Render(" " + row))
 		} else {
@@ -799,20 +964,15 @@ func (m tuiModel) renderStatus() string {
 		modeName = "Performance (P2C random)"
 		modeColor = yellowStyle
 	}
-	keyDisplay := "(none)"
-	if cfg.Proxy.APIKey != "" {
-		k := cfg.Proxy.APIKey
-		if len(k) >= 8 {
-			keyDisplay = k[:8] + "…" + k[len(k)-4:]
-		}
-	}
 
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render("Status"))
 	b.WriteString("\n\n")
 	b.WriteString("  Proxy\n")
 	b.WriteString(fmt.Sprintf("    Endpoint:     http://%s:%d\n", cfg.Proxy.Bind, cfg.Proxy.Port))
-	b.WriteString(fmt.Sprintf("    API key:      %s  %s\n", magentaStyle.Render(keyDisplay), grayStyle.Render("[K rotate]")))
+	b.WriteString(fmt.Sprintf("    API keys:     %s  %s\n",
+		greenStyle.Render(fmt.Sprintf("%d", len(m.keys))),
+		grayStyle.Render("[manage in Keys tab]")))
 	b.WriteString(fmt.Sprintf("    Scheduling:   %s  %s\n", modeColor.Render(modeName), grayStyle.Render("[m cycle]")))
 	prot := "off"
 	protColor := grayStyle
@@ -841,41 +1001,7 @@ func (m tuiModel) renderStatus() string {
 	b.WriteString(fmt.Sprintf("    Total:        %s\n", boldStyle.Render(fmt.Sprintf("%d", m.stats.promptTokens+m.stats.completionTokens))))
 	b.WriteString("\n  Cost\n")
 	b.WriteString(fmt.Sprintf("    Total:        %s\n", greenStyle.Render(fmt.Sprintf("$%.4f", m.stats.totalCost))))
-
-	if len(m.accounts) > 0 {
-		b.WriteString("\n  Per-account quota\n")
-		for _, a := range m.accounts {
-			gw := a.QuotaWindowsParsed()
-			b.WriteString(fmt.Sprintf("    %-22s g5h:%s gwk:%s\n", a.Email,
-				formatQuotaPctStyled(gw.Gemini5h), formatQuotaPctStyled(gw.GeminiWeekly)))
-			b.WriteString(fmt.Sprintf("    %-22s e5h:%s ewk:%s",
-				"", formatQuotaPctStyled(gw.Other5h), formatQuotaPctStyled(gw.OtherWeekly)))
-			if len(a.ProtectedModels) > 0 {
-				b.WriteString("  " + yellowStyle.Render(fmt.Sprintf("[protected: %s]", strings.Join(a.ProtectedModels, ","))))
-			}
-			b.WriteString("\n")
-		}
-	}
 	return b.String()
-}
-
-func formatQuotaPctStyled(w *account.QuotaWindow) string {
-	if w == nil {
-		return grayStyle.Render("-")
-	}
-	if w.Disabled {
-		return grayStyle.Render(fmt.Sprintf("(%d%% off)", w.MaxPercentage))
-	}
-	s := fmt.Sprintf("%d%%", w.MaxPercentage)
-	switch {
-	case w.MaxPercentage >= 50:
-		return greenStyle.Render(s)
-	case w.MaxPercentage >= 20:
-		return yellowStyle.Render(s)
-	case w.MaxPercentage > 0:
-		return redStyle.Render(s)
-	}
-	return redStyle.Render("0%")
 }
 
 // keyHints returns context-specific keybinding hints for the current tab.
@@ -904,6 +1030,9 @@ func (m tuiModel) keyHints() string {
 		}
 	case tabKeys:
 		specific = []struct{ key, desc string }{
+			{"a", "add"},
+			{"K", "rotate"},
+			{"s", "show full"},
 			{"D", "delete"},
 			{"e", "enable/disable"},
 		}
@@ -911,7 +1040,6 @@ func (m tuiModel) keyHints() string {
 		specific = []struct{ key, desc string }{
 			{"r", "refresh quota"},
 			{"m", "cycle mode"},
-			{"K", "rotate key"},
 		}
 	}
 	all := append(specific, common...)

@@ -64,6 +64,17 @@ func newServeCmd() *cobra.Command {
 				return err
 			}
 			defer d.Close()
+			// Auto-create a default API key on first run.
+			keys, _ := account.ListAPIKeys(d)
+			if len(keys) == 0 {
+				defaultKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+				id, err := account.AddAPIKey(d, defaultKey, "default")
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Created default API key #%d (label: default)\n  %s\n", id, defaultKey)
+				fmt.Println("Use `hydra key add <label>` to create more keys.")
+			}
 			state := proxy.NewProxyState(d)
 			srv := proxy.NewProxyServer(cfg, state)
 			return srv.Serve()
@@ -439,52 +450,52 @@ func newUsageCmd() *cobra.Command {
 func newKeyCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "key",
-		Short: "Show or rotate the API key clients must present",
+		Short: "Manage API keys (add, list, remove, rotate, enable, disable)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
+			// Default: list keys
+			d, err := db.Open(config.DBPath())
 			if err != nil {
 				return err
 			}
-			if cfg.Proxy.APIKey == "" {
-				fmt.Println("No API key configured. Run `hydra key add <label>` to create one.")
-			} else {
-				fmt.Println(cfg.Proxy.APIKey)
+			defer d.Close()
+			keys, err := account.ListAPIKeys(d)
+			if err != nil {
+				return err
+			}
+			if len(keys) == 0 {
+				fmt.Println("No API keys. Run `hydra key add <label>` to create one.")
+				return nil
+			}
+			usage, _ := account.UsageByKey(d, 0)
+			fmt.Printf("%-4s %-14s %-20s %-8s %-8s %-10s %-10s %-12s\n",
+				"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST", "CREATED")
+			fmt.Println(strings.Repeat("-", 95))
+			for _, k := range keys {
+				var reqs, tokens int64
+				var cost float64
+				for _, u := range usage {
+					if u.HasKeyID && u.KeyID == k.ID {
+						reqs = u.Requests
+						tokens = u.PromptTokens + u.CompletionTokens
+						cost = u.CostUSD
+						break
+					}
+				}
+				prefix := k.Key
+				if len(prefix) >= 8 {
+					prefix = prefix[:8] + "…" + prefix[len(prefix)-4:]
+				}
+				status := "active"
+				if k.Disabled {
+					status = "disabled"
+				}
+				created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
+				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s\n",
+					k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
 			}
 			return nil
 		},
 	}
-	cmd.AddCommand(&cobra.Command{
-		Use:   "rotate",
-		Short: "Generate a new random API key, replacing the current one (legacy config key)",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			cfg.Proxy.APIKey = "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
-			if err := cfg.Save(); err != nil {
-				return err
-			}
-			fmt.Printf("✓ API key rotated (config fallback): %s\n", cfg.Proxy.APIKey)
-			return nil
-		},
-	})
-	cmd.AddCommand(&cobra.Command{
-		Use:   "show",
-		Short: "Print the current API key",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load()
-			if err != nil {
-				return err
-			}
-			if cfg.Proxy.APIKey == "" {
-				fmt.Println("No API key configured. Run `hydra key add <label>` to create one.")
-			} else {
-				fmt.Println(cfg.Proxy.APIKey)
-			}
-			return nil
-		},
-	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "add [label]",
 		Short: "Add a new API key with an optional label for per-key usage tracking",
@@ -501,7 +512,7 @@ func newKeyCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Printf("✓ API key #%d added (label: %s)\n  %s\n", id, label, newKey)
+			fmt.Printf("API key #%d added (label: %s)\n  %s\n", id, label, newKey)
 			return nil
 		},
 	})
@@ -523,9 +534,9 @@ func newKeyCmd() *cobra.Command {
 				return nil
 			}
 			usage, _ := account.UsageByKey(d, 0)
-			fmt.Printf("%-4s %-14s %-20s %-8s %-10s %-10s %-10s\n",
-				"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST")
-			fmt.Println(strings.Repeat("-", 85))
+			fmt.Printf("%-4s %-14s %-20s %-8s %-8s %-10s %-10s %-12s\n",
+				"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST", "CREATED")
+			fmt.Println(strings.Repeat("-", 95))
 			for _, k := range keys {
 				var reqs, tokens int64
 				var cost float64
@@ -545,9 +556,54 @@ func newKeyCmd() *cobra.Command {
 				if k.Disabled {
 					status = "disabled"
 				}
-				fmt.Printf("%-4d %-14s %-20s %-8s %-10d %-10d $%.4f\n",
-					k.ID, k.Label, prefix, status, reqs, tokens, cost)
+				created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
+				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s\n",
+					k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
 			}
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "rotate [id]",
+		Short: "Generate a new key string for an existing key id (old key immediately invalid)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseID(args[0])
+			if err != nil {
+				return err
+			}
+			d, err := db.Open(config.DBPath())
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			newKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+			if err := account.RotateAPIKey(d, id, newKey); err != nil {
+				return err
+			}
+			fmt.Printf("API key #%d rotated\n  %s\n", id, newKey)
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "show [id]",
+		Short: "Print the full key string for a given id",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseID(args[0])
+			if err != nil {
+				return err
+			}
+			d, err := db.Open(config.DBPath())
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+			k, err := account.GetAPIKey(d, id)
+			if err != nil {
+				return err
+			}
+			fmt.Println(k.Key)
 			return nil
 		},
 	})
@@ -568,7 +624,7 @@ func newKeyCmd() *cobra.Command {
 			if err := account.RemoveAPIKey(d, id); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Removed API key #%d\n", id)
+			fmt.Printf("Removed API key #%d\n", id)
 			return nil
 		},
 	})
@@ -589,7 +645,7 @@ func newKeyCmd() *cobra.Command {
 			if err := account.SetAPIKeyDisabled(d, id, true); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Disabled API key #%d\n", id)
+			fmt.Printf("Disabled API key #%d\n", id)
 			return nil
 		},
 	})
@@ -610,7 +666,7 @@ func newKeyCmd() *cobra.Command {
 			if err := account.SetAPIKeyDisabled(d, id, false); err != nil {
 				return err
 			}
-			fmt.Printf("✓ Enabled API key #%d\n", id)
+			fmt.Printf("Enabled API key #%d\n", id)
 			return nil
 		},
 	})

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/google/uuid"
 )
 
 type AppConfig struct {
@@ -21,7 +20,6 @@ type AppConfig struct {
 type ProxyConfig struct {
 	Port        int    `toml:"port"`
 	Bind        string `toml:"bind"`
-	APIKey      string `toml:"api_key"`
 	LogRequests bool   `toml:"log_requests"`
 	// UpstreamProxy is the HTTP CONNECT proxy used for outbound calls to
 	// Google's cloudcode-pa endpoints (e.g. "http://127.0.0.1:7890").
@@ -57,7 +55,6 @@ func defaultProxy() ProxyConfig {
 	return ProxyConfig{
 		Port:        18045,
 		Bind:        "127.0.0.1",
-		APIKey:      "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", ""),
 		LogRequests: true,
 	}
 }
@@ -147,7 +144,7 @@ func Load() (*AppConfig, error) {
 }
 
 // applyEnvOverrides lets environment variables override config file values.
-// Supported: HYDRA_PORT, HYDRA_BIND, HYDRA_API_KEY, HYDRA_UPSTREAM_PROXY,
+// Supported: HYDRA_PORT, HYDRA_BIND, HYDRA_UPSTREAM_PROXY,
 // HYDRA_LOG_REQUESTS, HYDRA_SCHEDULING_MODE.
 func applyEnvOverrides(cfg *AppConfig) {
 	if v := os.Getenv("HYDRA_PORT"); v != "" {
@@ -157,9 +154,6 @@ func applyEnvOverrides(cfg *AppConfig) {
 	}
 	if v := os.Getenv("HYDRA_BIND"); v != "" {
 		cfg.Proxy.Bind = v
-	}
-	if v := os.Getenv("HYDRA_API_KEY"); v != "" {
-		cfg.Proxy.APIKey = v
 	}
 	if v := os.Getenv("HYDRA_UPSTREAM_PROXY"); v != "" {
 		cfg.Proxy.UpstreamProxy = v

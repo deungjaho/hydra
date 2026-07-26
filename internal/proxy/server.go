@@ -546,10 +546,10 @@ func (s *ProxyServer) ensureFreshToken(acc *account.Account, mappedModel, origin
 	return tok, true
 }
 
-// checkAuth authenticates the request. Returns:
-//   - (some, true)  — matched a DB-managed API key. The pointer holds the key id.
-//   - (nil,  true)  — matched the config fallback key (no per-key tracking),
-//                     or no auth configured at all (open access).
+// checkAuth authenticates the request against DB-managed API keys.
+// Returns:
+//   - (some, true)  — matched a DB API key. The pointer holds the key id.
+//   - (nil,  true)  — open access (no keys configured yet).
 //   - (nil,  false) — auth failed.
 func (s *ProxyServer) checkAuth(r *http.Request) (*int64, bool) {
 	var provided string
@@ -568,23 +568,18 @@ func (s *ProxyServer) checkAuth(r *http.Request) (*int64, bool) {
 	}
 
 	if provided == "" {
-		// No key presented → only allow if no auth configured at all.
-		configKey := s.Config.Proxy.APIKey
+		// No key presented → only allow if no keys configured at all (first run).
 		keys, _ := account.ListAPIKeys(s.State.DB)
-		if configKey == "" && len(keys) == 0 {
-			return nil, true // open access
+		if len(keys) == 0 {
+			return nil, true // open access until keys are created
 		}
 		return nil, false
 	}
 
-	// 1. DB-managed keys first (per-key stats).
+	// Check DB keys only.
 	if k, err := account.FindAPIKey(s.State.DB, provided); err == nil && k != nil {
 		id := k.ID
 		return &id, true
-	}
-	// 2. Fallback to config key.
-	if s.Config.Proxy.APIKey != "" && provided == s.Config.Proxy.APIKey {
-		return nil, true
 	}
 	return nil, false
 }

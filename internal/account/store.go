@@ -3,6 +3,7 @@ package account
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/db"
@@ -468,6 +469,39 @@ func RemoveAPIKey(d *db.Db, id int64) error {
 		_, err := conn.Exec(`DELETE FROM api_keys WHERE id = ?`, id)
 		return err
 	})
+}
+
+// RotateAPIKey replaces the key string for an existing key id.
+// The old key string immediately becomes invalid.
+func RotateAPIKey(d *db.Db, id int64, newKey string) error {
+	return d.WithConn(func(conn *sql.DB) error {
+		res, err := conn.Exec(`UPDATE api_keys SET key = ? WHERE id = ?`, newKey, id)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("API key #%d not found", id)
+		}
+		return nil
+	})
+}
+
+// GetAPIKey returns a single key by id.
+func GetAPIKey(d *db.Db, id int64) (*ApiKey, error) {
+	var k ApiKey
+	var disabled int64
+	err := d.WithConn(func(conn *sql.DB) error {
+		return conn.QueryRow(
+			`SELECT id, key, label, disabled, created_at FROM api_keys WHERE id = ?`,
+			id,
+		).Scan(&k.ID, &k.Key, &k.Label, &disabled, &k.CreatedAt)
+	})
+	if err != nil {
+		return nil, err
+	}
+	k.Disabled = disabled != 0
+	return &k, nil
 }
 
 // SetAPIKeyDisabled toggles a key's disabled flag.
