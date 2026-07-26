@@ -484,3 +484,225 @@ func TestNormalizeSchemaTypes_ComplexSchema(t *testing.T) {
 	}
 }
 
+// --- helper function tests ---
+
+func TestStrOr(t *testing.T) {
+	m := map[string]any{"name": "alice", "age": float64(30)}
+	if strOr(m, "name", "default") != "alice" {
+		t.Error("should return string value")
+	}
+	if strOr(m, "age", "default") != "default" {
+		t.Error("non-string should return default")
+	}
+	if strOr(m, "missing", "default") != "default" {
+		t.Error("missing key should return default")
+	}
+}
+
+func TestInt64Or(t *testing.T) {
+	tests := []struct {
+		name string
+		m    map[string]any
+		key  string
+		want int64
+	}{
+		{"float64", map[string]any{"n": float64(42)}, "n", 42},
+		{"int64", map[string]any{"n": int64(42)}, "n", 42},
+		{"int", map[string]any{"n": 42}, "n", 42},
+		{"string", map[string]any{"n": "42"}, "n", 99},
+		{"missing", map[string]any{}, "n", 99},
+		{"nil", nil, "n", 99},
+	}
+	for _, tt := range tests {
+		got := int64Or(tt.m, tt.key, 99)
+		if got != tt.want {
+			t.Errorf("int64Or(%s) = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestValueOr(t *testing.T) {
+	m := map[string]any{"x": 123}
+	if valueOr(m, "x", "def") != 123 {
+		t.Error("should return value")
+	}
+	if valueOr(m, "y", "def") != "def" {
+		t.Error("missing key should return default")
+	}
+}
+
+func TestOrDefault(t *testing.T) {
+	m := map[string]any{"x": 123}
+	if orDefault(m, "x", 999) != 123 {
+		t.Error("should return value")
+	}
+	if orDefault(m, "y", 999) != 999 {
+		t.Error("missing key should return default")
+	}
+}
+
+func TestToInt64(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want int64
+	}{
+		{"float64", float64(42), 42},
+		{"int64", int64(42), 42},
+		{"int", 42, 42},
+		{"string", "42", 99},
+		{"nil", nil, 99},
+	}
+	for _, tt := range tests {
+		got := toInt64(tt.v, 99)
+		if got != tt.want {
+			t.Errorf("toInt64(%s) = %d, want %d", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestIsRoutableModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{"gemini-3-pro", true},
+		{"claude-sonnet-4-6", true},
+		{"gpt-4", true},
+		{"deepseek-r1", true},
+		{"chat_something", false},
+		{"tab_something", false},
+		{"random-model", false},
+		{"", false},
+		{"GEMINI-3-PRO", true}, // case insensitive
+	}
+	for _, tt := range tests {
+		got := isRoutableModel(tt.model)
+		if got != tt.want {
+			t.Errorf("isRoutableModel(%q) = %v, want %v",
+				tt.model, got, tt.want)
+		}
+	}
+}
+
+func TestBuildDynamicModelCandidates_ProModel(t *testing.T) {
+	cands := buildDynamicModelCandidates("gemini-3-pro")
+	if len(cands) == 0 {
+		t.Fatal("expected non-empty candidates")
+	}
+	// First candidate should be the model itself.
+	if cands[0] != "gemini-3-pro" {
+		t.Errorf("first candidate = %q, want gemini-3-pro", cands[0])
+	}
+	// Should include gemini-pro-agent and previews.
+	found := false
+	for _, c := range cands {
+		if c == "gemini-pro-agent" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("candidates should include gemini-pro-agent")
+	}
+}
+
+func TestBuildDynamicModelCandidates_ProImage(t *testing.T) {
+	cands := buildDynamicModelCandidates("gemini-3-pro-image")
+	if len(cands) == 0 {
+		t.Fatal("expected non-empty candidates")
+	}
+	if cands[0] != "gemini-3-pro-image" {
+		t.Errorf("first = %q", cands[0])
+	}
+}
+
+func TestBuildDynamicModelCandidates_NonProModel(t *testing.T) {
+	cands := buildDynamicModelCandidates("gemini-2.5-flash")
+	if cands != nil {
+		t.Errorf("non-pro model should return nil, got %v", cands)
+	}
+}
+
+func TestBuildDynamicModelCandidates_Empty(t *testing.T) {
+	if buildDynamicModelCandidates("") != nil {
+		t.Error("empty model should return nil")
+	}
+}
+
+func TestBuildDynamicModelCandidates_NoDuplicates(t *testing.T) {
+	cands := buildDynamicModelCandidates("gemini-3-pro")
+	seen := map[string]bool{}
+	for _, c := range cands {
+		if seen[c] {
+			t.Errorf("duplicate candidate: %s", c)
+		}
+		seen[c] = true
+	}
+}
+
+func TestResolveModelForAccount_ExactMatch(t *testing.T) {
+	available := map[string]struct{}{
+		"gemini-3-pro": {},
+	}
+	got := ResolveModelForAccount("gemini-3-pro", available)
+	if got != "gemini-3-pro" {
+		t.Errorf("got %q, want gemini-3-pro", got)
+	}
+}
+
+func TestResolveModelForAccount_Fallback(t *testing.T) {
+	available := map[string]struct{}{
+		"gemini-pro-agent": {},
+	}
+	got := ResolveModelForAccount("gemini-3-pro", available)
+	if got != "gemini-pro-agent" {
+		t.Errorf("got %q, want gemini-pro-agent", got)
+	}
+}
+
+func TestResolveModelForAccount_NoMatch(t *testing.T) {
+	available := map[string]struct{}{
+		"some-other-model": {},
+	}
+	got := ResolveModelForAccount("gemini-3-pro", available)
+	if got != "gemini-3-pro" {
+		t.Errorf("got %q, want gemini-3-pro (unchanged)", got)
+	}
+}
+
+func TestResolveModelForAccount_NonProModel(t *testing.T) {
+	available := map[string]struct{}{
+		"gemini-2.5-flash": {},
+	}
+	got := ResolveModelForAccount("gemini-2.5-flash", available)
+	if got != "gemini-2.5-flash" {
+		t.Errorf("got %q, want gemini-2.5-flash", got)
+	}
+}
+
+func TestInnerResponse(t *testing.T) {
+	// With "response" wrapper.
+	resp := map[string]any{
+		"response": map[string]any{"candidates": []any{}},
+	}
+	inner := innerResponse(resp)
+	if _, ok := inner["candidates"]; !ok {
+		t.Error("should unwrap response")
+	}
+
+	// Without wrapper — passthrough.
+	resp2 := map[string]any{"candidates": []any{}}
+	inner2 := innerResponse(resp2)
+	if _, ok := inner2["candidates"]; !ok {
+		t.Error("should passthrough when no response wrapper")
+	}
+}
+
+func TestSortStrings(t *testing.T) {
+	s := []string{"banana", "apple", "cherry"}
+	sortStrings(s)
+	if s[0] != "apple" || s[1] != "banana" || s[2] != "cherry" {
+		t.Errorf("not sorted: %v", s)
+	}
+}
+
