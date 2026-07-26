@@ -166,6 +166,47 @@ type tuiModel struct {
 	// Key detail view
 	showFullKey   string // non-empty = showing full key overlay
 	showFullKeyID int64
+	// Log detail overlay (Logs tab)
+	showLogDetail int64 // log ID; 0 = no overlay
+	// Status tab time window
+	statusWindow statusWindow
+	// Status tab aggregated usage (per window)
+	usageByModel   []account.UsageRow
+	usageByAccount []account.UsageRow
+	usageByKey     []account.KeyUsage
+}
+
+type statusWindow int
+
+const (
+	windowWeek statusWindow = iota
+	windowDay
+	windowMonth
+	windowAll
+)
+
+func (w statusWindow) String() string {
+	switch w {
+	case windowDay:
+		return "day"
+	case windowMonth:
+		return "month"
+	case windowAll:
+		return "all"
+	}
+	return "week"
+}
+
+func (w statusWindow) Since() int64 {
+	switch w {
+	case windowDay:
+		return time.Now().Unix() - 86400
+	case windowMonth:
+		return time.Now().Unix() - 86400*30
+	case windowAll:
+		return 0
+	}
+	return time.Now().Unix() - 86400*7
 }
 
 func newTUIModel(d *db.Db) tuiModel {
@@ -183,6 +224,11 @@ func (m *tuiModel) refreshData() {
 	m.keys, _ = account.ListAPIKeys(m.db)
 	m.models = proxy.DynamicModelList(m.accounts)
 	m.stats = computeStats(m.accounts, m.logs)
+	// Aggregated usage for Status tab (per time window).
+	since := m.statusWindow.Since()
+	m.usageByModel, _ = account.UsageByModel(m.db, since)
+	m.usageByAccount, _ = account.UsageByAccount(m.db, since)
+	m.usageByKey, _ = account.UsageByKey(m.db, since)
 }
 
 // ---------------------------------------------------------------------------
@@ -200,10 +246,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	// Handle full-key overlay — any key dismisses it.
 	if m.showFullKey != "" {
-		if km, ok := msg.(tea.KeyMsg); ok {
-			_ = km
+		if _, ok := msg.(tea.KeyMsg); ok {
 			m.showFullKey = ""
 			m.showFullKeyID = 0
+		}
+		return m, nil
+	}
+	// Handle log detail overlay — any key dismisses it.
+	if m.showLogDetail != 0 {
+		if _, ok := msg.(tea.KeyMsg); ok {
+			m.showLogDetail = 0
 		}
 		return m, nil
 	}
@@ -373,6 +425,28 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			k := m.keys[m.cursor]
 			m.showFullKey = k.Key
 			m.showFullKeyID = k.ID
+		}
+	case " ":
+		// Space: show log detail overlay (Logs tab).
+		if m.tab == tabLogs && m.logScroll+m.cursor < len(m.logs) {
+			l := m.logs[m.logScroll+m.cursor]
+			m.showLogDetail = l.ID
+		}
+	case "w":
+		// Cycle time window (Status tab).
+		if m.tab == tabStatus {
+			switch m.statusWindow {
+			case windowWeek:
+				m.statusWindow = windowDay
+			case windowDay:
+				m.statusWindow = windowMonth
+			case windowMonth:
+				m.statusWindow = windowAll
+			case windowAll:
+				m.statusWindow = windowWeek
+			}
+			m.statusMsg = fmt.Sprintf("Window: %s", m.statusWindow)
+			m.statusTime = time.Now()
 		}
 	case "m":
 		if m.tab == tabStatus {
@@ -607,6 +681,10 @@ func (m tuiModel) View() string {
 	if m.showFullKey != "" {
 		return m.renderFullKeyOverlay()
 	}
+	// Log detail overlay.
+	if m.showLogDetail != 0 {
+		return m.renderLogDetailOverlay()
+	}
 	// Input mode overlay.
 	if m.inputMode == inputAddKey {
 		var b strings.Builder
@@ -637,6 +715,114 @@ func (m tuiModel) renderFullKeyOverlay() string {
 		boldStyle.Render(m.showFullKey) + "\n\n" +
 		grayStyle.Render("Press any key to dismiss · Copy with your terminal's select")
 	b.WriteString(m.renderPanel(content))
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render(" any key = dismiss"))
+	return b.String()
+}
+
+func (m tuiModel) renderLogDetailOverlay() string {
+	// Find the log entry by ID.
+	var l *account.RequestLog
+	for _, log := range m.logs {
+		if log.ID == m.showLogDetail {
+			l = log
+			break
+		}
+	}
+	if l == nil {
+		m.showLogDetail = 0
+		return m.View()
+	}
+
+	// Build account/key context maps.
+	accMap := make(map[int64]string)
+	for _, a := range m.accounts {
+		accMap[a.ID] = a.Email
+	}
+	keyMap := make(map[int64]string)
+	for _, k := range m.keys {
+		keyMap[k.ID] = k.Label
+	}
+
+	var b strings.Builder
+	b.WriteString(m.renderHeader())
+	b.WriteString("\n")
+
+	var content strings.Builder
+	content.WriteString(panelTitleActive.Render(fmt.Sprintf("Log #%d Detail", l.ID)))
+	content.WriteString("\n\n")
+
+	// Time and status.
+	t := time.Unix(l.Ts, 0).Format("2006-01-02 15:04:05")
+	statusColor := greenStyle
+	switch {
+	case l.Status == 429:
+		statusColor = yellowStyle
+	case l.Status >= 400:
+		statusColor = redStyle
+	}
+	content.WriteString(fmt.Sprintf("  Time:        %s\n", t))
+	content.WriteString(fmt.Sprintf("  Status:      %s\n", statusColor.Render(fmt.Sprintf("%d", l.Status))))
+
+	// Account context.
+	accCtx := "-"
+	if l.HasAccountID {
+		if email, ok := accMap[l.AccountID]; ok {
+			accCtx = email
+		} else {
+			accCtx = fmt.Sprintf("#%d", l.AccountID)
+		}
+	}
+	content.WriteString(fmt.Sprintf("  Account:     %s\n", accCtx))
+
+	// Key context.
+	keyCtx := "-"
+	if l.HasAPIKeyID {
+		if label, ok := keyMap[l.APIKeyID]; ok {
+			keyCtx = label
+		} else {
+			keyCtx = fmt.Sprintf("#%d", l.APIKeyID)
+		}
+	}
+	content.WriteString(fmt.Sprintf("  API Key:     %s\n", keyCtx))
+
+	// Model.
+	model := "-"
+	if l.HasModel {
+		model = l.Model
+	}
+	content.WriteString(fmt.Sprintf("  Model:       %s\n", model))
+
+	// Client IP.
+	ip := "-"
+	if l.HasClientIP {
+		ip = l.ClientIP
+	}
+	content.WriteString(fmt.Sprintf("  Client IP:   %s\n", ip))
+
+	// Token breakdown.
+	content.WriteString("\n  Tokens\n")
+	content.WriteString(fmt.Sprintf("    Prompt:     %s\n", blueStyle.Render(fmt.Sprintf("%d", orInt64(l.HasPromptTokens, l.PromptTokens, 0)))))
+	content.WriteString(fmt.Sprintf("    Completion: %s\n", magentaStyle.Render(fmt.Sprintf("%d", orInt64(l.HasCompletion, l.CompletionTokens, 0)))))
+	content.WriteString(fmt.Sprintf("    Cached:     %s\n", greenStyle.Render(fmt.Sprintf("%d", orInt64(l.HasCached, l.CachedTokens, 0)))))
+	content.WriteString(fmt.Sprintf("    Thinking:   %s\n", yellowStyle.Render(fmt.Sprintf("%d", orInt64(l.HasThought, l.ThoughtTokens, 0)))))
+
+	// Cost.
+	cost := "-"
+	if l.HasCost {
+		cost = fmt.Sprintf("$%.6f", l.CostUSD)
+	}
+	content.WriteString(fmt.Sprintf("\n  Cost:        %s\n", greenStyle.Render(cost)))
+
+	// Error (full, no truncation).
+	if l.HasError && l.Error != "" {
+		content.WriteString("\n  Error\n")
+		content.WriteString(redStyle.Render(l.Error))
+		content.WriteString("\n")
+	}
+
+	content.WriteString("\n" + grayStyle.Render("Press any key to dismiss"))
+	b.WriteString(m.renderPanel(content.String()))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(" any key = dismiss"))
 	return b.String()
@@ -928,11 +1114,7 @@ func (m tuiModel) renderLogs() string {
 			cost,
 		)
 		if l.HasError && l.Error != "" {
-			errMsg := l.Error
-			if len(errMsg) > 30 {
-				errMsg = errMsg[:30] + "…"
-			}
-			line += " " + redStyle.Render(errMsg)
+			line += " " + redStyle.Render("!")
 		}
 		b.WriteString(line + "\n")
 	}
@@ -1005,8 +1187,27 @@ func (m tuiModel) renderStatus() string {
 		modeColor = yellowStyle
 	}
 
+	// Compute window-scoped totals from aggregated data.
+	var wReqs, wPrompt, wCompl, wCached, wThought int64
+	var wCost float64
+	for _, r := range m.usageByModel {
+		wReqs += r.Requests
+		wPrompt += r.PromptTokens
+		wCompl += r.CompletionTokens
+		wCached += r.CachedTokens
+		wThought += r.ThoughtTokens
+		wCost += r.CostUSD
+	}
+	wHit := 0.0
+	if wPrompt > 0 {
+		wHit = float64(wCached) / float64(wPrompt) * 100.0
+	}
+
 	var b strings.Builder
 	b.WriteString(panelTitleActive.Render("Status"))
+	b.WriteString(fmt.Sprintf("  %s  %s",
+		grayStyle.Render(fmt.Sprintf("window=%s", m.statusWindow)),
+		grayStyle.Render("[w cycle]")))
 	b.WriteString("\n\n")
 	b.WriteString("  Proxy\n")
 	b.WriteString(fmt.Sprintf("    Endpoint:     http://%s:%d\n", cfg.Proxy.Bind, cfg.Proxy.Port))
@@ -1024,23 +1225,58 @@ func (m tuiModel) renderStatus() string {
 	b.WriteString("\n  Accounts\n")
 	b.WriteString(fmt.Sprintf("    Active:       %s / %d\n", greenStyle.Render(fmt.Sprintf("%d", m.stats.activeAccounts)), m.stats.accountCount))
 	b.WriteString(fmt.Sprintf("    Disabled:     %s\n", redStyle.Render(fmt.Sprintf("%d", m.stats.disabledAccounts))))
-	b.WriteString("\n  Requests\n")
-	b.WriteString(fmt.Sprintf("    Total:        %d\n", m.stats.requestCount))
-	b.WriteString(fmt.Sprintf("    Successful:   %s\n", greenStyle.Render(fmt.Sprintf("%d", m.stats.successCount))))
-	b.WriteString(fmt.Sprintf("    Errors:       %s\n", redStyle.Render(fmt.Sprintf("%d", m.stats.errorCount))))
-	b.WriteString(fmt.Sprintf("    Rate-limited: %s\n", yellowStyle.Render(fmt.Sprintf("%d", m.stats.rateLimitedCount))))
-	b.WriteString("\n  Tokens\n")
-	b.WriteString(fmt.Sprintf("    Prompt:       %s\n", blueStyle.Render(fmt.Sprintf("%d", m.stats.promptTokens))))
-	b.WriteString(fmt.Sprintf("    Completion:   %s\n", magentaStyle.Render(fmt.Sprintf("%d", m.stats.completionTokens))))
-	hit := 0.0
-	if m.stats.promptTokens > 0 {
-		hit = float64(m.stats.cachedTokens) / float64(m.stats.promptTokens) * 100.0
+	b.WriteString(fmt.Sprintf("\n  Usage (%s)\n", m.statusWindow))
+	b.WriteString(fmt.Sprintf("    Requests:     %d\n", wReqs))
+	b.WriteString(fmt.Sprintf("    Prompt:       %s\n", blueStyle.Render(fmt.Sprintf("%d", wPrompt))))
+	b.WriteString(fmt.Sprintf("    Completion:   %s\n", magentaStyle.Render(fmt.Sprintf("%d", wCompl))))
+	b.WriteString(fmt.Sprintf("    Cached:       %s %s\n", greenStyle.Render(fmt.Sprintf("%d", wCached)), grayStyle.Render(fmt.Sprintf("(%.1f%% hit)", wHit))))
+	b.WriteString(fmt.Sprintf("    Thinking:     %s\n", yellowStyle.Render(fmt.Sprintf("%d", wThought))))
+	b.WriteString(fmt.Sprintf("    Cost:         %s\n", greenStyle.Render(fmt.Sprintf("$%.4f", wCost))))
+
+	// Per-model table.
+	if len(m.usageByModel) > 0 {
+		b.WriteString(fmt.Sprintf("\n  By Model (%s)\n", m.statusWindow))
+		b.WriteString(grayStyle.Render(fmt.Sprintf("    %-28s %-6s %-8s %-8s %-8s %s",
+			"MODEL", "REQS", "PROMPT", "COMPL", "CACHED", "COST")))
+		b.WriteString("\n")
+		for _, r := range m.usageByModel {
+			modelColor := grayStyle
+			switch {
+			case strings.HasPrefix(r.Label, "claude-"):
+				modelColor = magentaStyle
+			case strings.HasPrefix(r.Label, "gemini-"):
+				modelColor = blueStyle
+			}
+			b.WriteString(fmt.Sprintf("    %-28s %-6d %-8d %-8d %-8d $%.4f\n",
+				modelColor.Render(fmt.Sprintf("%-28s", r.Label)),
+				r.Requests, r.PromptTokens, r.CompletionTokens, r.CachedTokens, r.CostUSD))
+		}
 	}
-	b.WriteString(fmt.Sprintf("    Cached:       %s %s\n", greenStyle.Render(fmt.Sprintf("%d", m.stats.cachedTokens)), grayStyle.Render(fmt.Sprintf("(%.1f%% hit)", hit))))
-	b.WriteString(fmt.Sprintf("    Thinking:     %s\n", yellowStyle.Render(fmt.Sprintf("%d", m.stats.thoughtTokens))))
-	b.WriteString(fmt.Sprintf("    Total:        %s\n", boldStyle.Render(fmt.Sprintf("%d", m.stats.promptTokens+m.stats.completionTokens))))
-	b.WriteString("\n  Cost\n")
-	b.WriteString(fmt.Sprintf("    Total:        %s\n", greenStyle.Render(fmt.Sprintf("$%.4f", m.stats.totalCost))))
+
+	// Per-account table.
+	if len(m.usageByAccount) > 0 {
+		b.WriteString(fmt.Sprintf("\n  By Account (%s)\n", m.statusWindow))
+		b.WriteString(grayStyle.Render(fmt.Sprintf("    %-28s %-6s %-8s %-8s %s",
+			"EMAIL", "REQS", "PROMPT", "COMPL", "COST")))
+		b.WriteString("\n")
+		for _, r := range m.usageByAccount {
+			b.WriteString(fmt.Sprintf("    %-28s %-6d %-8d %-8d $%.4f\n",
+				r.Label, r.Requests, r.PromptTokens, r.CompletionTokens, r.CostUSD))
+		}
+	}
+
+	// Per-key table.
+	if len(m.usageByKey) > 0 {
+		b.WriteString(fmt.Sprintf("\n  By Key (%s)\n", m.statusWindow))
+		b.WriteString(grayStyle.Render(fmt.Sprintf("    %-14s %-6s %-8s %-8s %s",
+			"LABEL", "REQS", "PROMPT", "COMPL", "COST")))
+		b.WriteString("\n")
+		for _, r := range m.usageByKey {
+			b.WriteString(fmt.Sprintf("    %-14s %-6d %-8d %-8d $%.4f\n",
+				r.Label, r.Requests, r.PromptTokens, r.CompletionTokens, r.CostUSD))
+		}
+	}
+
 	return b.String()
 }
 
@@ -1061,6 +1297,7 @@ func (m tuiModel) keyHints() string {
 		}
 	case tabLogs:
 		specific = []struct{ key, desc string }{
+			{"Space", "detail"},
 			{"Ctrl+d/u", "scroll"},
 			{"g/G", "top/bot"},
 		}
@@ -1080,6 +1317,7 @@ func (m tuiModel) keyHints() string {
 		specific = []struct{ key, desc string }{
 			{"r", "refresh quota"},
 			{"m", "cycle mode"},
+			{"w", "cycle window"},
 		}
 	}
 	all := append(specific, common...)

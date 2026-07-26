@@ -353,7 +353,7 @@ func UsageByModel(d *db.Db, sinceTs int64) ([]UsageRow, error) {
          FROM request_logs
          WHERE ts >= ? AND status = 200 AND model IS NOT NULL
          GROUP BY model
-         ORDER BY cost DESC`)
+         ORDER BY SUM(cost_usd) DESC`)
 }
 
 // UsageByAccount aggregates usage grouped by account email.
@@ -366,7 +366,7 @@ func UsageByAccount(d *db.Db, sinceTs int64) ([]UsageRow, error) {
          LEFT JOIN accounts a ON a.id = r.account_id
          WHERE r.ts >= ? AND r.status = 200
          GROUP BY r.account_id
-         ORDER BY cost DESC`)
+         ORDER BY SUM(r.cost_usd) DESC`)
 }
 
 func queryUsage(d *db.Db, sinceTs int64, query string) ([]UsageRow, error) {
