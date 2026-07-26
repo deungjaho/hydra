@@ -31,9 +31,6 @@ var (
 			Background(lipgloss.Color("36"))
 	inactiveTabStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("245"))
-	panelBorder = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("240"))
 	panelTitleActive = lipgloss.NewStyle().
 				Bold(true).
 				Foreground(lipgloss.Color("36"))
@@ -52,9 +49,6 @@ var (
 	statusBarStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("252"))
-	inputPromptStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("36"))
 )
 
 // ---------------------------------------------------------------------------
@@ -597,13 +591,7 @@ func (m *tuiModel) clampLogScroll() {
 }
 
 func (m tuiModel) bodyHeight() int {
-	if m.height == 0 {
-		return 20
-	}
-	h := m.height - 7
-	if h < 5 {
-		h = 5
-	}
+	_, h := m.panelSize()
 	return h
 }
 
@@ -624,7 +612,7 @@ func (m tuiModel) View() string {
 		var b strings.Builder
 		b.WriteString(m.renderHeader())
 		b.WriteString("\n")
-		b.WriteString(panelBorder.Render(
+		b.WriteString(m.renderPanel(
 			panelTitleActive.Render("Add API Key") + "\n\n" +
 				m.textInput.View() + "\n\n" +
 				grayStyle.Render("Enter to confirm · Esc to cancel")))
@@ -648,10 +636,47 @@ func (m tuiModel) renderFullKeyOverlay() string {
 	content := panelTitleActive.Render(fmt.Sprintf("API Key #%d (full)", m.showFullKeyID)) + "\n\n" +
 		boldStyle.Render(m.showFullKey) + "\n\n" +
 		grayStyle.Render("Press any key to dismiss · Copy with your terminal's select")
-	b.WriteString(panelBorder.Render(content))
+	b.WriteString(m.renderPanel(content))
 	b.WriteString("\n")
 	b.WriteString(helpStyle.Render(" any key = dismiss"))
 	return b.String()
+}
+
+// renderPanel wraps content in a fixed-size bordered panel that fills the
+// available terminal space. The panel dimensions are calculated from the
+// terminal size, not the content size — this keeps the layout stable.
+func (m tuiModel) renderPanel(content string) string {
+	w, h := m.panelSize()
+	if w < 10 || h < 3 {
+		return content
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Width(w).
+		Height(h).
+		Render(content)
+}
+
+// panelSize returns the inner content area dimensions (excluding borders).
+func (m tuiModel) panelSize() (int, int) {
+	if m.width == 0 || m.height == 0 {
+		return 80, 20
+	}
+	// Layout: title(1) + tabs(1) + summary(1) + panel + footer(1 or 2)
+	footerLines := 1
+	if m.statusMsg != "" {
+		footerLines = 2
+	}
+	// Panel outer height = terminal - header(3) - footer - 1 (newline before footer)
+	panelOuterH := m.height - 3 - footerLines - 1
+	if panelOuterH < 3 {
+		panelOuterH = 3
+	}
+	// Panel outer width = terminal width
+	panelOuterW := m.width
+	// Inner content area = outer - 2 (borders)
+	return panelOuterW - 2, panelOuterH - 2
 }
 
 func (m tuiModel) renderHeader() string {
@@ -693,7 +718,22 @@ func (m tuiModel) renderBody() string {
 	case tabStatus:
 		content = m.renderStatus()
 	}
-	return panelBorder.Render(content)
+	// Truncate content to panel height to prevent overflow.
+	_, panelH := m.panelSize()
+	content = truncateLines(content, panelH)
+	return m.renderPanel(content)
+}
+
+// truncateLines limits content to at most maxLines lines, preserving ANSI codes.
+func truncateLines(content string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) <= maxLines {
+		return content
+	}
+	return strings.Join(lines[:maxLines], "\n")
 }
 
 func (m tuiModel) renderAccounts() string {
