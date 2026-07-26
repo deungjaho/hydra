@@ -164,11 +164,11 @@ func buildModelsBlob(body string) (string, int64, bool) {
 		return string(b), 0, false
 	}
 	type outModel struct {
-		Name      string `json:"name"`
-		Percentage int32 `json:"percentage"`
-		ResetTime string `json:"reset_time"`
+		Name       string `json:"name"`
+		Percentage int32  `json:"percentage"`
+		ResetTime  string `json:"reset_time"`
 	}
-	var out []outModel
+	out := make([]outModel, 0, len(parsed.Models))
 	var maxPct int32
 	hasMax := false
 	for name, info := range parsed.Models {
@@ -182,20 +182,21 @@ func buildModelsBlob(body string) (string, int64, bool) {
 		_, hasFraction := probe["remainingFraction"]
 		hasReset := qi.ResetTime != ""
 
-		var frac float64
+		var pct int32
 		switch {
 		case hasFraction:
-			frac = qi.RemainingFraction
+			frac := qi.RemainingFraction
+			pct = int32(frac*100.0 + 0.5)
+			if pct < 0 {
+				pct = 0
+			}
+			if pct > 100 {
+				pct = 100
+			}
 		case hasReset:
-			frac = 0.0
-		default:
-			continue
-		}
-		pct := int32(frac*100.0 + 0.5)
-		if pct < 0 {
 			pct = 0
-		}
-		if pct > 100 {
+		default:
+			// Model has no quota info — still include it with 100%.
 			pct = 100
 		}
 		out = append(out, outModel{Name: name, Percentage: pct, ResetTime: qi.ResetTime})

@@ -604,7 +604,7 @@ func ResolveModelForAccount(mappedModel string, available map[string]struct{}) s
 }
 
 // DynamicModelList returns the union of routable models available across the
-// given accounts, plus the canonical supported list.
+// given accounts, fetched dynamically from Google's fetchAvailableModels API.
 func DynamicModelList(accounts []*account.Account) []string {
 	set := make(map[string]struct{})
 	for _, a := range accounts {
@@ -614,8 +614,11 @@ func DynamicModelList(accounts []*account.Account) []string {
 			}
 		}
 	}
-	for _, m := range SupportedModels {
-		set[m] = struct{}{}
+	if len(set) == 0 {
+		// Fallback to hardcoded list if no accounts have quota data yet.
+		for _, m := range SupportedModels {
+			set[m] = struct{}{}
+		}
 	}
 	out := make([]string, 0, len(set))
 	for m := range set {
@@ -628,6 +631,10 @@ func DynamicModelList(accounts []*account.Account) []string {
 
 func isRoutableModel(name string) bool {
 	m := strings.ToLower(name)
+	// Exclude internal/non-routable models (chat_*, tab_*, etc.)
+	if strings.HasPrefix(m, "chat_") || strings.HasPrefix(m, "tab_") {
+		return false
+	}
 	return strings.HasPrefix(m, "gemini-") ||
 		strings.HasPrefix(m, "claude-") ||
 		strings.HasPrefix(m, "gpt-") ||
