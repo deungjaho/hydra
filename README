@@ -1,0 +1,127 @@
+Hydra
+
+Hydra 是一个反向代理，把 Google Antigravity (Gemini) 模型通过 OpenAI 和
+Anthropic 兼容 API 暴露出来。绑定多个 Google 账号，让 Hydra 处理 OAuth 刷新
+和配额感知的负载均衡，然后把任何 OpenAI/Anthropic 兼容客户端指向它即可。
+
+
+功能
+
+  - OpenAI 兼容 API: /v1/chat/completions, /v1/models
+  - Anthropic 兼容 API: /v1/messages
+  - 多账号池化: 绑定多个 Google 账号，Hydra 在账号间轮转，支持
+    cache_first / balance / performance_first 三种调度模式
+  - 配额保护: 自动禁用触及配额阈值的模型，配额恢复后自动重新启用
+  - API key 管理: 按 key 跟踪用量，支持 rotate / enable / disable
+  - TUI 仪表盘: 在终端里查看账号、日志、模型、key 和用量统计
+  - 请求日志: SQLite 记录每个请求的 token 明细和费用估算
+  - Prometheus metrics: /metrics 端点用于监控
+  - JSON mode: 支持 OpenAI response_format: {type: "json_object"}
+  - 图片和音频输入: 通过 OpenAI content parts 传入
+
+
+安装
+
+  Homebrew (macOS):
+
+    brew tap deungjaho/hydra
+    brew install hydra
+
+  AUR (Arch Linux):
+
+    yay -S hydra-proxy
+
+  从源码编译:
+
+    go build ./cmd/hydra
+
+
+快速开始
+
+  1. 绑定 Google 账号 (启动 OAuth 流程):
+
+       hydra accounts add
+
+  2. 启动代理 (首次运行自动创建默认 API key):
+
+       hydra serve
+
+  3. 把客户端指向它:
+
+       curl http://127.0.0.1:18045/v1/chat/completions \
+         -H "Authorization: Bearer <your-api-key>" \
+         -H "Content-Type: application/json" \
+         -d '{"model":"gemini-3.6-flash-high","messages":[{"role":"user","content":"hi"}]}'
+
+  4. 打开 TUI 仪表盘:
+
+       hydra
+
+
+命令一览
+
+  hydra                      启动 TUI 仪表盘
+  hydra serve                启动代理服务器
+  hydra accounts add         通过 OAuth 绑定 Google 账号
+  hydra accounts list        列出已绑定的账号
+  hydra key add <label>      创建新的 API key
+  hydra key list             列出 API key 及用量
+  hydra key rotate <id>      轮换 API key (旧 key 失效)
+  hydra key show <id>        打印完整 key 字符串
+  hydra quota                从 Google API 刷新配额
+  hydra usage [-w day|week|month|all]
+                             显示用量/费用统计
+  hydra logs                 显示最近的请求日志
+  hydra config               显示或重置配置
+
+
+配置
+
+配置文件位于 ~/.config/hydra/config.toml。环境变量覆盖配置文件值:
+
+  HYDRA_PORT                 proxy.port                  默认 18045
+  HYDRA_BIND                 proxy.bind                  默认 127.0.0.1
+  HYDRA_UPSTREAM_PROXY       proxy.upstream_proxy        默认无
+  HYDRA_LOG_REQUESTS         proxy.log_requests          默认 true
+  HYDRA_SCHEDULING_MODE      scheduling.mode             默认 balance
+  HYDRA_OAUTH_CLIENT_ID      —                           默认 Antigravity 的 client ID
+  HYDRA_OAUTH_CLIENT_SECRET  —                           默认 Antigravity 的 client secret
+
+调度模式:
+
+  cache        每个 session 粘滞到一个账号 (最大化缓存命中)
+  balance      粘滞 + 配额/降级时切换
+  performance  power-of-two-choices 随机采样
+
+
+TUI 快捷键
+
+  Tab / 1-5    切换 tab
+  j / k        上下导航
+  Ctrl+d/u     滚动 (Logs tab)
+  Space        日志详情展开 (Logs tab)
+  a            添加 key (Keys tab)
+  K            轮换 key (Keys tab)
+  s            显示完整 key (Keys tab)
+  D            删除行
+  e            启用/禁用
+  r            刷新配额
+  w            切换时间窗口 (Status tab)
+  m            切换调度模式 (Status tab)
+  q            退出
+
+
+OAuth 凭据
+
+Hydra 复用 Antigravity 桌面应用的 Google OAuth client ID 和 secret。
+OAuth 桌面客户端属于 "public" client 类型，secret 嵌入在客户端二进制里，
+本身不是真正的机密。详见 internal/account/oauth.go。
+
+如果 Google 封禁了默认 client ID，可以通过环境变量
+HYDRA_OAUTH_CLIENT_ID 和 HYDRA_OAUTH_CLIENT_SECRET 指向你自己的
+Google OAuth 桌面客户端。
+
+
+许可证
+
+MIT
