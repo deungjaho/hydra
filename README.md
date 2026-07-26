@@ -97,6 +97,8 @@ override config file values:
 | `HYDRA_UPSTREAM_PROXY` | `proxy.upstream_proxy` | (none) |
 | `HYDRA_LOG_REQUESTS` | `proxy.log_requests` | `true` |
 | `HYDRA_SCHEDULING_MODE` | `scheduling.mode` | `balance` |
+| `HYDRA_OAUTH_CLIENT_ID` | — | Antigravity's client ID |
+| `HYDRA_OAUTH_CLIENT_SECRET` | — | Antigravity's client secret |
 
 Scheduling modes:
 - **cache** — sticky to one account per session (maximizes cache hits)
