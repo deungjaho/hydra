@@ -16,6 +16,49 @@ import (
 	"github.com/deungjaho/hydra/internal/proxy"
 )
 
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
+var (
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("36"))
+	activeTabStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("0")).
+			Background(lipgloss.Color("36"))
+	inactiveTabStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	panelBorder = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("240"))
+	panelTitleActive = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("36"))
+	panelTitleInactive = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("245"))
+	selectedStyle = lipgloss.NewStyle().
+			Bold(true).
+			Background(lipgloss.Color("236"))
+	grayStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	greenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	redStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	magentaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	blueStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	boldStyle    = lipgloss.NewStyle().Bold(true)
+	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	helpKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
+	statusBarStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("238")).
+			Foreground(lipgloss.Color("252"))
+)
+
+// ---------------------------------------------------------------------------
+// Model
+// ---------------------------------------------------------------------------
+
 type tab int
 
 const (
@@ -116,18 +159,20 @@ func newTUIModel(d *db.Db) tuiModel {
 
 func (m *tuiModel) refreshData() {
 	m.accounts, _ = account.ListAccounts(m.db)
-	m.logs, _ = account.RecentLogs(m.db, 200)
+	m.logs, _ = account.RecentLogs(m.db, 500)
 	m.keys, _ = account.ListAPIKeys(m.db)
 	m.models = proxy.DynamicModelList(m.accounts)
 	m.stats = computeStats(m.accounts, m.logs)
 }
 
-// Init implements tea.Model.
+// ---------------------------------------------------------------------------
+// Bubbletea implementation
+// ---------------------------------------------------------------------------
+
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// Update implements tea.Model.
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -139,24 +184,42 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 	case tickMsg:
 		m.refreshData()
-		// Clear stale status message.
 		if m.statusMsg != "" && time.Since(m.statusTime) > 3*time.Second {
 			m.statusMsg = ""
 		}
-		return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg { return tickMsg{} })
+		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 	case refreshMsg:
 		m.statusMsg = msg.text
 		m.statusTime = time.Now()
+		m.refreshData()
 		return m, nil
 	}
 	return m, nil
 }
 
+func (m tuiModel) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Click on tab bar to switch tabs.
+	tabBarY := 1 // line 0 = title, line 1 = tabs
+	if msg.Y == tabBarY && msg.Type == tea.MouseLeft {
+		x := 0
+		for i, name := range tabNames {
+			tabW := len(name) + 2 // padding
+			if msg.X >= x && msg.X < x+tabW {
+				m.setTab(tab(i))
+				return m, nil
+			}
+			x += tabW + 1
+		}
+	}
+	return m, nil
+}
+
 func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	km := key.NewBinding
-	_ = km
+	_ = key.NewBinding
 	switch k.String() {
 	case "q", "esc", "ctrl+c":
 		m.quitting = true
@@ -185,12 +248,12 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cursorBottom()
 	case "ctrl+d", "pgdown":
 		if m.tab == tabLogs {
-			m.logScroll += visibleRows() / 2
+			m.logScroll += m.bodyHeight() / 2
 			m.clampLogScroll()
 		}
 	case "ctrl+u", "pgup":
 		if m.tab == tabLogs {
-			m.logScroll -= visibleRows() / 2
+			m.logScroll -= m.bodyHeight() / 2
 			m.clampLogScroll()
 		}
 	case "r":
@@ -199,7 +262,6 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "a":
 		if m.tab == tabAccounts {
-			// TUI can't easily run interactive OAuth inline; print a hint.
 			m.statusMsg = "Run `hydra accounts add` in a separate terminal to bind an account."
 			m.statusTime = time.Now()
 		} else if m.tab == tabKeys {
@@ -207,95 +269,112 @@ func (m tuiModel) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusTime = time.Now()
 		}
 	case "D":
-		if m.tab == tabAccounts && m.cursor < len(m.accounts) {
-			a := m.accounts[m.cursor]
-			_ = account.RemoveAccount(m.db, a.ID)
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			m.statusMsg = fmt.Sprintf("✓ Removed account #%d (%s)", a.ID, a.Email)
-			m.statusTime = time.Now()
-			m.refreshData()
-		} else if m.tab == tabKeys && m.cursor < len(m.keys) {
-			k := m.keys[m.cursor]
-			_ = account.RemoveAPIKey(m.db, k.ID)
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			m.statusMsg = fmt.Sprintf("✓ Removed API key #%d", k.ID)
-			m.statusTime = time.Now()
-			m.refreshData()
-		}
+		m.handleDelete()
 	case "e":
-		if m.tab == tabAccounts && m.cursor < len(m.accounts) {
-			a := m.accounts[m.cursor]
-			newState := !a.Disabled
-			_ = account.SetAccountDisabled(m.db, a.ID, newState)
-			verb := "enabled"
-			if newState {
-				verb = "disabled"
-			}
-			m.statusMsg = fmt.Sprintf("✓ Account #%d %s", a.ID, verb)
-			m.statusTime = time.Now()
-			m.refreshData()
-		} else if m.tab == tabKeys && m.cursor < len(m.keys) {
-			k := m.keys[m.cursor]
-			newState := !k.Disabled
-			_ = account.SetAPIKeyDisabled(m.db, k.ID, newState)
-			verb := "enabled"
-			if newState {
-				verb = "disabled"
-			}
-			m.statusMsg = fmt.Sprintf("✓ API key #%d %s", k.ID, verb)
-			m.statusTime = time.Now()
-			m.refreshData()
-		}
+		m.handleToggle()
 	case "m":
 		if m.tab == tabStatus {
-			cfg, err := config.Load()
-			if err != nil {
-				m.statusMsg = "✗ " + err.Error()
-				m.statusTime = time.Now()
-				return m, nil
-			}
-			switch cfg.Scheduling.Mode {
-			case config.SchedulingCache:
-				cfg.Scheduling.Mode = config.SchedulingBalance
-			case config.SchedulingBalance:
-				cfg.Scheduling.Mode = config.SchedulingPerformance
-			case config.SchedulingPerformance:
-				cfg.Scheduling.Mode = config.SchedulingCache
-			}
-			modeName := string(cfg.Scheduling.Mode)
-			if err := cfg.Save(); err != nil {
-				m.statusMsg = "✗ Save failed: " + err.Error()
-			} else {
-				m.statusMsg = fmt.Sprintf("✓ Scheduling mode → %s (restart proxy to apply)", modeName)
-			}
-			m.statusTime = time.Now()
+			m.cycleSchedulingMode()
 		}
 	case "K":
 		if m.tab == tabStatus {
-			cfg, err := config.Load()
-			if err != nil {
-				m.statusMsg = "✗ " + err.Error()
-				m.statusTime = time.Now()
-				return m, nil
-			}
-			cfg.Proxy.APIKey = "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
-			newKey := cfg.Proxy.APIKey
-			if err := cfg.Save(); err != nil {
-				m.statusMsg = "✗ Save failed: " + err.Error()
-			} else {
-				m.statusMsg = fmt.Sprintf("✓ API key rotated: %s (restart proxy to apply)", newKey)
-			}
-			m.statusTime = time.Now()
+			m.rotateAPIKey()
 		}
+	case "enter", " ":
+		// Could open detail view in the future.
 	}
 	return m, nil
 }
 
-// refreshQuota runs a background quota refresh and emits a refreshMsg.
+func (m *tuiModel) handleDelete() {
+	if m.tab == tabAccounts && m.cursor < len(m.accounts) {
+		a := m.accounts[m.cursor]
+		_ = account.RemoveAccount(m.db, a.ID)
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		m.statusMsg = fmt.Sprintf("Removed account #%d (%s)", a.ID, a.Email)
+		m.statusTime = time.Now()
+		m.refreshData()
+	} else if m.tab == tabKeys && m.cursor < len(m.keys) {
+		k := m.keys[m.cursor]
+		_ = account.RemoveAPIKey(m.db, k.ID)
+		if m.cursor > 0 {
+			m.cursor--
+		}
+		m.statusMsg = fmt.Sprintf("Removed API key #%d", k.ID)
+		m.statusTime = time.Now()
+		m.refreshData()
+	}
+}
+
+func (m *tuiModel) handleToggle() {
+	if m.tab == tabAccounts && m.cursor < len(m.accounts) {
+		a := m.accounts[m.cursor]
+		newState := !a.Disabled
+		_ = account.SetAccountDisabled(m.db, a.ID, newState)
+		verb := "enabled"
+		if newState {
+			verb = "disabled"
+		}
+		m.statusMsg = fmt.Sprintf("Account #%d %s", a.ID, verb)
+		m.statusTime = time.Now()
+		m.refreshData()
+	} else if m.tab == tabKeys && m.cursor < len(m.keys) {
+		k := m.keys[m.cursor]
+		newState := !k.Disabled
+		_ = account.SetAPIKeyDisabled(m.db, k.ID, newState)
+		verb := "enabled"
+		if newState {
+			verb = "disabled"
+		}
+		m.statusMsg = fmt.Sprintf("API key #%d %s", k.ID, verb)
+		m.statusTime = time.Now()
+		m.refreshData()
+	}
+}
+
+func (m *tuiModel) cycleSchedulingMode() {
+	cfg, err := config.Load()
+	if err != nil {
+		m.statusMsg = err.Error()
+		m.statusTime = time.Now()
+		return
+	}
+	switch cfg.Scheduling.Mode {
+	case config.SchedulingCache:
+		cfg.Scheduling.Mode = config.SchedulingBalance
+	case config.SchedulingBalance:
+		cfg.Scheduling.Mode = config.SchedulingPerformance
+	case config.SchedulingPerformance:
+		cfg.Scheduling.Mode = config.SchedulingCache
+	}
+	modeName := string(cfg.Scheduling.Mode)
+	if err := cfg.Save(); err != nil {
+		m.statusMsg = "Save failed: " + err.Error()
+	} else {
+		m.statusMsg = fmt.Sprintf("Scheduling -> %s (restart proxy to apply)", modeName)
+	}
+	m.statusTime = time.Now()
+}
+
+func (m *tuiModel) rotateAPIKey() {
+	cfg, err := config.Load()
+	if err != nil {
+		m.statusMsg = err.Error()
+		m.statusTime = time.Now()
+		return
+	}
+	cfg.Proxy.APIKey = "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	newKey := cfg.Proxy.APIKey
+	if err := cfg.Save(); err != nil {
+		m.statusMsg = "Save failed: " + err.Error()
+	} else {
+		m.statusMsg = fmt.Sprintf("API key rotated: %s (restart proxy to apply)", newKey)
+	}
+	m.statusTime = time.Now()
+}
+
 func (m tuiModel) refreshQuota() tea.Msg {
 	cfg, _ := config.Load()
 	if cfg == nil {
@@ -334,6 +413,10 @@ func (m tuiModel) refreshQuota() tea.Msg {
 	}
 	return refreshMsg{text: fmt.Sprintf("Quota refreshed: %d ok, %d errors", ok, errs)}
 }
+
+// ---------------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------------
 
 func (m *tuiModel) nextTab() {
 	m.tab = (m.tab + 1) % 5
@@ -410,7 +493,7 @@ func (m *tuiModel) cursorBottom() {
 			m.modelsCur = len(m.models) - 1
 		}
 	case tabLogs:
-		m.logScroll = len(m.logs) - visibleRows()
+		m.logScroll = len(m.logs) - m.bodyHeight()
 		m.clampLogScroll()
 	}
 }
@@ -419,7 +502,7 @@ func (m *tuiModel) clampLogScroll() {
 	if m.logScroll < 0 {
 		m.logScroll = 0
 	}
-	max := len(m.logs) - visibleRows()
+	max := len(m.logs) - m.bodyHeight()
 	if max < 0 {
 		max = 0
 	}
@@ -428,9 +511,24 @@ func (m *tuiModel) clampLogScroll() {
 	}
 }
 
-func visibleRows() int { return 40 }
+// bodyHeight returns the number of rows available for content,
+// accounting for header (2 lines), panel border (2 lines), and footer (2 lines).
+func (m tuiModel) bodyHeight() int {
+	if m.height == 0 {
+		return 20 // fallback for non-terminal mode
+	}
+	// title(1) + tabs(1) + summary(1) + border-top(1) + border-bottom(1) + help(1) + status(1) = 7
+	h := m.height - 7
+	if h < 5 {
+		h = 5
+	}
+	return h
+}
 
-// View implements tea.Model.
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
 func (m tuiModel) View() string {
 	if m.quitting {
 		return ""
@@ -444,23 +542,12 @@ func (m tuiModel) View() string {
 	return b.String()
 }
 
-var (
-	cyanStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
-	grayStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	greenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	yellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
-	magentaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	blueStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	boldStyle   = lipgloss.NewStyle().Bold(true)
-)
-
 func (m tuiModel) renderHeader() string {
 	var tabs strings.Builder
 	for i, name := range tabNames {
-		style := grayStyle
+		style := inactiveTabStyle
 		if tab(i) == m.tab {
-			style = cyanStyle.Background(lipgloss.Color("51")).Foreground(lipgloss.Color("0"))
+			style = activeTabStyle
 		}
 		if i > 0 {
 			tabs.WriteString(" ")
@@ -476,37 +563,39 @@ func (m tuiModel) renderHeader() string {
 		m.stats.totalCost,
 	)
 
-	return boldStyle.Foreground(lipgloss.Color("36")).Render("hydra") + "\n" +
+	return titleStyle.Render("hydra") + "\n" +
 		tabs.String() + "\n" + line2
 }
 
 func (m tuiModel) renderBody() string {
+	var content string
 	switch m.tab {
 	case tabAccounts:
-		return m.renderAccounts()
+		content = m.renderAccounts()
 	case tabLogs:
-		return m.renderLogs()
+		content = m.renderLogs()
 	case tabModels:
-		return m.renderModels()
+		content = m.renderModels()
 	case tabKeys:
-		return m.renderKeys()
+		content = m.renderKeys()
 	case tabStatus:
-		return m.renderStatus()
+		content = m.renderStatus()
 	}
-	return ""
+	// Wrap content in a bordered panel.
+	return panelBorder.Render(content)
 }
 
 func (m tuiModel) renderAccounts() string {
 	if len(m.accounts) == 0 {
-		return cyanStyle.Render("Accounts [a add · D delete · e enable/disable]") + "\n  " +
+		return panelTitleActive.Render("Accounts") + "\n  " +
 			grayStyle.Render("No accounts bound. Run `hydra accounts add` to bind one via OAuth.")
 	}
 	var b strings.Builder
-	b.WriteString(cyanStyle.Render("Accounts [a add · D delete · e enable/disable]"))
+	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Accounts (%d)", len(m.accounts))))
 	b.WriteString("\n")
-	header := fmt.Sprintf("%-4s %-26s %-14s %-14s %-14s %-14s %s",
+	header := fmt.Sprintf("  %-4s %-26s %-14s %-14s %-14s %-14s %s",
 		"ID", "EMAIL", "GEM_5H", "GEM_WK", "EXT_5H", "EXT_WK", "STATUS")
-	b.WriteString(cyanStyle.Render(header))
+	b.WriteString(grayStyle.Render(header))
 	b.WriteString("\n")
 	for i, a := range m.accounts {
 		gw := a.QuotaWindowsParsed()
@@ -523,10 +612,11 @@ func (m tuiModel) renderAccounts() string {
 			status,
 		)
 		if i == m.cursor {
-			b.WriteString("> " + row + "\n")
+			b.WriteString(selectedStyle.Render(" " + row))
 		} else {
-			b.WriteString("  " + row + "\n")
+			b.WriteString(" " + row)
 		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -552,16 +642,16 @@ func formatQuotaWindowStyled(w *account.QuotaWindow) string {
 
 func (m tuiModel) renderKeys() string {
 	if len(m.keys) == 0 {
-		return cyanStyle.Render("API Keys [a add · D delete · e enable/disable]") + "\n  " +
+		return panelTitleActive.Render("API Keys") + "\n  " +
 			grayStyle.Render("No API keys. Run `hydra key add <label>` to create one.")
 	}
 	usage, _ := account.UsageByKey(m.db, 0)
 	var b strings.Builder
-	b.WriteString(cyanStyle.Render("API Keys [a add · D delete · e enable/disable]"))
+	b.WriteString(panelTitleActive.Render(fmt.Sprintf("API Keys (%d)", len(m.keys))))
 	b.WriteString("\n")
-	header := fmt.Sprintf("%-4s %-14s %-20s %-8s %-8s %-10s %-10s",
+	header := fmt.Sprintf("  %-4s %-14s %-20s %-8s %-8s %-10s %-10s",
 		"ID", "LABEL", "KEY", "STATUS", "REQS", "TOKENS", "COST")
-	b.WriteString(cyanStyle.Render(header))
+	b.WriteString(grayStyle.Render(header))
 	b.WriteString("\n")
 	for i, k := range m.keys {
 		var reqs, tokens int64
@@ -585,29 +675,34 @@ func (m tuiModel) renderKeys() string {
 		row := fmt.Sprintf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f",
 			k.ID, k.Label, prefix, status, reqs, tokens, cost)
 		if i == m.cursor {
-			b.WriteString("> " + row + "\n")
+			b.WriteString(selectedStyle.Render(" " + row))
 		} else {
-			b.WriteString("  " + row + "\n")
+			b.WriteString(" " + row)
 		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
 
 func (m tuiModel) renderLogs() string {
 	if len(m.logs) == 0 {
-		return cyanStyle.Render("Recent Logs") + "\n  " + grayStyle.Render("No request logs yet.")
+		return panelTitleActive.Render("Recent Logs") + "\n  " +
+			grayStyle.Render("No request logs yet.")
 	}
 	var b strings.Builder
-	b.WriteString(cyanStyle.Render(fmt.Sprintf("Recent Logs (%d) — j/k scroll, Ctrl+d/u half-page", len(m.logs))))
+	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Recent Logs (%d)", len(m.logs))))
 	b.WriteString("\n")
-	cap := visibleRows()
+	cap := m.bodyHeight() - 2 // account for title + header
+	if cap < 1 {
+		cap = 1
+	}
 	end := m.logScroll + cap
 	if end > len(m.logs) {
 		end = len(m.logs)
 	}
 	for i := m.logScroll; i < end; i++ {
 		l := m.logs[i]
-		t := time.Unix(l.Ts, 0).UTC().Format("01-02 15:04:05")
+		t := time.Unix(l.Ts, 0).Format("01-02 15:04:05")
 		statusColor := greenStyle
 		switch {
 		case l.Status == 429:
@@ -630,29 +725,33 @@ func (m tuiModel) renderLogs() string {
 		if l.HasCost {
 			cost = fmt.Sprintf("$%.4f", l.CostUSD)
 		}
-		line := fmt.Sprintf("%-11s %-3s %-22s p:%d c:%d %s %s",
+		line := fmt.Sprintf("%-11s %-3s %-22s p:%d c:%d %s",
 			t, statusColor.Render(fmt.Sprintf("%d", l.Status)), modelColor.Render(fmt.Sprintf("%-22s", model)),
 			orInt64(l.HasPromptTokens, l.PromptTokens, 0),
 			orInt64(l.HasCompletion, l.CompletionTokens, 0),
 			cost,
-			"",
 		)
 		if l.HasError && l.Error != "" {
 			line += " " + redStyle.Render(l.Error)
 		}
 		b.WriteString(line + "\n")
 	}
+	// Scroll indicator
+	if len(m.logs) > cap {
+		b.WriteString(grayStyle.Render(fmt.Sprintf("  [%d-%d/%d] Ctrl+d/u scroll", m.logScroll+1, end, len(m.logs))))
+	}
 	return b.String()
 }
 
 func (m tuiModel) renderModels() string {
 	if len(m.models) == 0 {
-		return cyanStyle.Render("Models") + "\n  " + grayStyle.Render("No models available. Run `hydra quota` to fetch from accounts.")
+		return panelTitleActive.Render("Models") + "\n  " +
+			grayStyle.Render("No models available. Run `hydra quota` to fetch from accounts.")
 	}
 	var b strings.Builder
-	b.WriteString(cyanStyle.Render(fmt.Sprintf("Models (%d)", len(m.models))))
+	b.WriteString(panelTitleActive.Render(fmt.Sprintf("Models (%d)", len(m.models))))
 	b.WriteString("\n")
-	b.WriteString(cyanStyle.Render(fmt.Sprintf("%-4s %-34s %-10s %-10s", "#", "MODEL ID", "FAMILY", "REQUESTS")))
+	b.WriteString(grayStyle.Render(fmt.Sprintf("  %-4s %-34s %-10s %-10s", "#", "MODEL ID", "FAMILY", "REQS")))
 	b.WriteString("\n")
 	for i, name := range m.models {
 		family := "other"
@@ -676,10 +775,11 @@ func (m tuiModel) renderModels() string {
 		row := fmt.Sprintf("%-4d %-34s %-10s %-10s",
 			i+1, familyColor.Render(name), familyColor.Render(family), usageStr)
 		if i == m.modelsCur {
-			b.WriteString("> " + row + "\n")
+			b.WriteString(selectedStyle.Render(" " + row))
 		} else {
-			b.WriteString("  " + row + "\n")
+			b.WriteString(" " + row)
 		}
+		b.WriteString("\n")
 	}
 	return b.String()
 }
@@ -708,7 +808,7 @@ func (m tuiModel) renderStatus() string {
 	}
 
 	var b strings.Builder
-	b.WriteString(cyanStyle.Render("Status — overview [m mode · K rotate key]"))
+	b.WriteString(panelTitleActive.Render("Status"))
 	b.WriteString("\n\n")
 	b.WriteString("  Proxy\n")
 	b.WriteString(fmt.Sprintf("    Endpoint:     http://%s:%d\n", cfg.Proxy.Bind, cfg.Proxy.Port))
@@ -778,18 +878,61 @@ func formatQuotaPctStyled(w *account.QuotaWindow) string {
 	return redStyle.Render("0%")
 }
 
-func (m tuiModel) renderFooter() string {
-	hints := "  Tab/1-5 · j/k↑↓ · g/G top/bot · r refresh · D del · e enable · m mode · K rotate · q quit"
-	if m.statusMsg != "" {
-		return lipgloss.NewStyle().Background(lipgloss.Color("3")).Foreground(lipgloss.Color("0")).Render(
-			" "+m.statusMsg+" | "+hints)
+// keyHints returns context-specific keybinding hints for the current tab.
+func (m tuiModel) keyHints() string {
+	common := []struct{ key, desc string }{
+		{"Tab", "switch"},
+		{"j/k", "navigate"},
+		{"q", "quit"},
 	}
-	return grayStyle.Render(hints)
+	var specific []struct{ key, desc string }
+	switch m.tab {
+	case tabAccounts:
+		specific = []struct{ key, desc string }{
+			{"r", "refresh quota"},
+			{"D", "delete"},
+			{"e", "enable/disable"},
+		}
+	case tabLogs:
+		specific = []struct{ key, desc string }{
+			{"Ctrl+d/u", "scroll"},
+			{"g/G", "top/bot"},
+		}
+	case tabModels:
+		specific = []struct{ key, desc string }{
+			{"g/G", "top/bot"},
+		}
+	case tabKeys:
+		specific = []struct{ key, desc string }{
+			{"D", "delete"},
+			{"e", "enable/disable"},
+		}
+	case tabStatus:
+		specific = []struct{ key, desc string }{
+			{"r", "refresh quota"},
+			{"m", "cycle mode"},
+			{"K", "rotate key"},
+		}
+	}
+	all := append(specific, common...)
+	var parts []string
+	for _, h := range all {
+		parts = append(parts, helpKeyStyle.Render(h.key)+" "+helpStyle.Render(h.desc))
+	}
+	return strings.Join(parts, helpStyle.Render(" · "))
+}
+
+func (m tuiModel) renderFooter() string {
+	hints := m.keyHints()
+	if m.statusMsg != "" {
+		return statusBarStyle.Render(" " + m.statusMsg) + "\n" + helpStyle.Render(" " + hints)
+	}
+	return helpStyle.Render(" " + hints)
 }
 
 // RunTUI launches the TUI dashboard.
 func RunTUI(d *db.Db) error {
-	p := tea.NewProgram(newTUIModel(d), tea.WithAltScreen())
+	p := tea.NewProgram(newTUIModel(d), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
