@@ -264,9 +264,19 @@ func parseSummary(body string) (string, []QuotaWindowInfo) {
 // ComputeProtectedModels decides which models should be marked as protected.
 // A model is protected when its remaining percentage falls below threshold.
 // Models already protected but now above the threshold are removed (recovered).
+//
+// If monitored is non-empty, only those models are checked. If monitored is
+// empty, all models in modelPercentages are checked.
 func ComputeProtectedModels(current []string, modelPercentages map[string]int32, monitored []string, threshold int32) []string {
 	out := append([]string{}, current...)
-	for _, stdID := range monitored {
+	check := monitored
+	if len(check) == 0 {
+		check = make([]string, 0, len(modelPercentages))
+		for m := range modelPercentages {
+			check = append(check, m)
+		}
+	}
+	for _, stdID := range check {
 		pct, ok := modelPercentages[stdID]
 		if !ok {
 			pct = 100
@@ -281,7 +291,6 @@ func ComputeProtectedModels(current []string, modelPercentages map[string]int32,
 		if pct < threshold && !isProtected {
 			out = append(out, stdID)
 		} else if pct >= threshold && isProtected {
-			// Remove.
 			filtered := out[:0]
 			for _, m := range out {
 				if m != stdID {

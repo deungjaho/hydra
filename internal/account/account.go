@@ -244,5 +244,17 @@ type KeyUsage struct {
 	Requests         int64
 }
 
+// KeyModelUsage is aggregated usage per API key × model.
+type KeyModelUsage struct {
+	KeyID            int64
+	Label            string
+	KeyPrefix        string
+	Model            string
+	PromptTokens     int64
+	CompletionTokens int64
+	CostUSD          float64
+	Requests         int64
+}
+
 // Compile-time marker that Db is used.
 var _ = db.Open

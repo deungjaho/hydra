@@ -37,7 +37,8 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 func (s *ProxyServer) Serve() error {
 	addr := fmt.Sprintf("%s:%d", s.Config.Proxy.Bind, s.Config.Proxy.Port)
 
-	// Background quota refresher (5-minute interval).
+	// Background loops: token refresher (1-min) + quota refresher (5-min).
+	go s.tokenRefresherLoop()
 	go s.quotaRefresherLoop()
 
 	mux := http.NewServeMux()
@@ -46,6 +47,7 @@ func (s *ProxyServer) Serve() error {
 	mux.HandleFunc("/v1/chat/completions", s.handleChatCompletions)
 	mux.HandleFunc("/v1/messages", s.handleAnthropicMessages)
 	mux.HandleFunc("/v1/messages/count_tokens", s.handleAnthropicCountTokens)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -848,13 +850,47 @@ func setSSEHeaders(w http.ResponseWriter) {
 // ---------------------------------------------------------------------------
 
 func (s *ProxyServer) quotaRefresherLoop() {
-	// First tick fires immediately — skip it so we don't hammer Google on boot.
+	// Run once on boot, then every 5 minutes.
+	RefreshAllQuotas(s)
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
 		if err := RefreshAllQuotas(s); err != nil {
 			log.Printf("background quota refresh failed: %v", err)
 		}
+	}
+}
+
+// tokenRefresherLoop proactively refreshes access tokens that are within
+// oauthRefreshSkew (15 min) of expiry, so requests don't hit a stale token.
+func (s *ProxyServer) tokenRefresherLoop() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.refreshExpiringTokens()
+	}
+}
+
+func (s *ProxyServer) refreshExpiringTokens() {
+	accounts, err := account.ListAccounts(s.State.DB)
+	if err != nil {
+		return
+	}
+	for _, acc := range accounts {
+		if acc.Disabled || !account.NeedsRefresh(acc.ExpiresAt) {
+			continue
+		}
+		tok, expiresAt, err := account.RefreshToken(s.HTTP, acc.RefreshToken)
+		if err != nil {
+			log.Printf("proactive token refresh failed for %s: %v", acc.Email, err)
+			continue
+		}
+		if err := account.UpdateTokens(s.State.DB, acc.ID, tok, expiresAt, ""); err != nil {
+			log.Printf("persist proactively refreshed token failed for %s: %v", acc.Email, err)
+			continue
+		}
+		log.Printf("proactively refreshed token for %s (expires in %dm)",
+			acc.Email, (expiresAt-time.Now().Unix())/60)
 	}
 }
 

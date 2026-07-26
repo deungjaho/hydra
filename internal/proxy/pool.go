@@ -125,7 +125,11 @@ func SelectAccount(
 		candidates = append(candidates, a)
 	}
 	if len(candidates) == 0 {
-		return nil
+		// All accounts are either disabled, rate-limited, or protected
+		// for this model. Fall back to the highest-quota non-disabled
+		// account so the request at least gets tried upstream.
+		fallback := selectFallback(accounts, limiter, mappedModel)
+		return fallback
 	}
 
 	// Sticky session (Cache + Balance).
@@ -171,6 +175,41 @@ func lastUsedOrZero(a *account.Account) int64 {
 	return a.LastUsedAt
 }
 
+// selectFallback picks the best non-disabled account when all candidates
+// were filtered out by protection/cooldown. Prefers accounts not on cooldown.
+func selectFallback(accounts []*account.Account, limiter *RateLimitTracker, mappedModel string) *account.Account {
+	var best *account.Account
+	var bestQuota int64
+	for _, a := range accounts {
+		if a.Disabled {
+			continue
+		}
+		// Skip rate-limited accounts if possible.
+		if limiter.IsLimited(a.ID, mappedModel) {
+			continue
+		}
+		q := quotaRemainingOrZero(a)
+		if best == nil || q > bestQuota {
+			best = a
+			bestQuota = q
+		}
+	}
+	// Last resort: ignore cooldowns.
+	if best == nil {
+		for _, a := range accounts {
+			if a.Disabled {
+				continue
+			}
+			q := quotaRemainingOrZero(a)
+			if best == nil || q > bestQuota {
+				best = a
+				bestQuota = q
+			}
+		}
+	}
+	return best
+}
+
 func p2cSelect(candidates []*account.Account) *account.Account {
 	if len(candidates) == 1 {
 		return candidates[0]
@@ -200,6 +239,7 @@ type ProxyState struct {
 	RateLimiter    *RateLimitTracker
 	Sticky         *StickySessions
 	requestCounter muCounter
+	startedAt      time.Time
 }
 
 type muCounter struct {
@@ -219,6 +259,7 @@ func NewProxyState(d *db.Db) *ProxyState {
 		DB:          d,
 		RateLimiter: NewRateLimitTracker(),
 		Sticky:      NewStickySessions(),
+		startedAt:   time.Now(),
 	}
 }
 

@@ -492,8 +492,8 @@ func UsageByKey(d *db.Db, sinceTs int64) ([]KeyUsage, error) {
              FROM request_logs r
              LEFT JOIN api_keys k ON k.id = r.api_key_id
              WHERE r.ts >= ? AND r.status = 200
-             GROUP BY k.id
-             ORDER BY cost DESC`, sinceTs)
+             GROUP BY k.id, k.label, k.key
+             ORDER BY SUM(r.cost_usd) DESC`, sinceTs)
 		if err != nil {
 			return err
 		}
@@ -535,7 +535,58 @@ func UsageByKey(d *db.Db, sinceTs int64) ([]KeyUsage, error) {
 	return out, err
 }
 
-// optString returns the value or NULL marker.
+// UsageByKeyModel aggregates usage per API key × model.
+func UsageByKeyModel(d *db.Db, sinceTs int64) ([]KeyModelUsage, error) {
+	var out []KeyModelUsage
+	err := d.WithConn(func(conn *sql.DB) error {
+		rows, err := conn.Query(`
+            SELECT k.id, k.label, k.key, r.model,
+                    SUM(r.prompt_tokens), SUM(r.completion_tokens), SUM(r.cost_usd), COUNT(*)
+             FROM request_logs r
+             LEFT JOIN api_keys k ON k.id = r.api_key_id
+             WHERE r.ts >= ? AND r.status = 200
+             GROUP BY k.id, k.label, k.key, r.model
+             ORDER BY SUM(r.cost_usd) DESC`, sinceTs)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var u KeyModelUsage
+			var keyID sql.NullInt64
+			var label, key, model sql.NullString
+			var prompt, completion, requests sql.NullInt64
+			var cost sql.NullFloat64
+			if err := rows.Scan(&keyID, &label, &key, &model, &prompt, &completion, &cost, &requests); err != nil {
+				return err
+			}
+			u.KeyID = keyID.Int64
+			if label.Valid {
+				u.Label = label.String
+			} else {
+				u.Label = "(no key)"
+			}
+			if key.Valid {
+				k := key.String
+				if len(k) >= 8 {
+					u.KeyPrefix = k[:8] + "…" + k[len(k)-4:]
+				} else {
+					u.KeyPrefix = k
+				}
+			}
+			if model.Valid {
+				u.Model = model.String
+			}
+			u.PromptTokens = prompt.Int64
+			u.CompletionTokens = completion.Int64
+			u.CostUSD = cost.Float64
+			u.Requests = requests.Int64
+			out = append(out, u)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
 func optString(s string, has bool) any {
 	if !has {
 		return nil
