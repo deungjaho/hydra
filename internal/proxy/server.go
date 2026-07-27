@@ -133,6 +133,8 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID, _ := openaiReq["user"].(string)
+	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
+		r.Header.Get("X-Hydra-No-Sticky") == "1"
 
 	// Failover loop: try accounts until one succeeds or all are exhausted.
 	tried := make(map[int64]bool)
@@ -145,6 +147,8 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			mappedModel,
 			sessionID,
 			s.Config.QuotaProtection.Enabled,
+			s.Config.Scheduling.StickySessions,
+			noSticky,
 		)
 		if acc == nil {
 			http.Error(w,
@@ -169,7 +173,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		tried[acc.ID] = true
-		if sessionID != "" {
+		if sessionID != "" && !noSticky {
 			s.State.Sticky.Bind(sessionID, acc.ID)
 		}
 
@@ -374,6 +378,8 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
 		sessionID, _ = md["user_id"].(string)
 	}
+	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
+		r.Header.Get("X-Hydra-No-Sticky") == "1"
 
 	// Failover loop: try accounts until one succeeds or all are exhausted.
 	tried := make(map[int64]bool)
@@ -386,6 +392,8 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			mappedModel,
 			sessionID,
 			s.Config.QuotaProtection.Enabled,
+			s.Config.Scheduling.StickySessions,
+			noSticky,
 		)
 		if acc == nil {
 			http.Error(w,
@@ -408,7 +416,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			return
 		}
 		tried[acc.ID] = true
-		if sessionID != "" {
+		if sessionID != "" && !noSticky {
 			s.State.Sticky.Bind(sessionID, acc.ID)
 		}
 
@@ -601,6 +609,8 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
 		sessionID, _ = md["user_id"].(string)
 	}
+	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
+		r.Header.Get("X-Hydra-No-Sticky") == "1"
 
 	acc := SelectAccount(
 		accounts,
@@ -610,6 +620,8 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 		mappedModel,
 		sessionID,
 		s.Config.QuotaProtection.Enabled,
+		s.Config.Scheduling.StickySessions,
+		noSticky,
 	)
 	if acc == nil {
 		http.Error(w, "no available accounts", http.StatusServiceUnavailable)

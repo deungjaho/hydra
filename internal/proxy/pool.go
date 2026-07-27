@@ -93,6 +93,9 @@ func (s *StickySessions) Unbind(sessionID string) {
 // sessionID is the conversation session id (used for sticky binding).
 // protectedFilter — when true, accounts whose protected_models contains
 // mappedModel are excluded.
+// stickyEnabled — when false, skip sticky binding entirely (global config).
+// noSticky — when true, skip sticky binding for this specific request
+// (per-request opt-out via X-Hydra-No-Sticky header).
 func SelectAccount(
 	accounts []*account.Account,
 	limiter *RateLimitTracker,
@@ -101,6 +104,8 @@ func SelectAccount(
 	mappedModel string,
 	sessionID string,
 	protectedFilter bool,
+	stickyEnabled bool,
+	noSticky bool,
 ) *account.Account {
 	modelLC := strings.ToLower(mappedModel)
 	var candidates []*account.Account
@@ -133,8 +138,11 @@ func SelectAccount(
 		return fallback
 	}
 
-	// Sticky session (Cache + Balance).
-	if sessionID != "" && mode != config.SchedulingPerformance {
+	// Sticky session (Cache + Balance), unless globally disabled or
+	// per-request opt-out.
+	stickyActive := stickyEnabled && !noSticky &&
+		sessionID != "" && mode != config.SchedulingPerformance
+	if stickyActive {
 		if boundID, ok := sticky.Get(sessionID); ok {
 			for _, a := range candidates {
 				if a.ID == boundID {

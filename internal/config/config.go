@@ -34,7 +34,8 @@ type ServerConfig struct {
 }
 
 type SchedulingConfig struct {
-	Mode SchedulingMode `toml:"mode"`
+	Mode           SchedulingMode `toml:"mode"`
+	StickySessions bool           `toml:"sticky_sessions"`
 }
 
 // SchedulingMode: cache_first / balance / performance_first.
@@ -81,7 +82,7 @@ func defaultServer() ServerConfig {
 }
 
 func defaultScheduling() SchedulingConfig {
-	return SchedulingConfig{Mode: SchedulingBalance}
+	return SchedulingConfig{Mode: SchedulingBalance, StickySessions: true}
 }
 
 func defaultMonitoredModels() []string {
