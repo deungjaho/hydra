@@ -80,6 +80,14 @@ func (s *ProxyServer) handleListModels(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
 }
 
+// isRetryableStatus returns true for status codes that warrant a
+// failover to another account (quota exhausted, capacity unavailable).
+// 401 is NOT retryable — it's a token refresh issue, not an account
+// exhaustion issue, and retrying on another account doesn't help.
+func isRetryableStatus(code int) bool {
+	return code == 429 || code == 503
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI ChatCompletions
 // ---------------------------------------------------------------------------
@@ -119,136 +127,203 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	sessionID, _ := openaiReq["user"].(string)
 
-	acc := SelectAccount(
-		accounts,
-		s.State.RateLimiter,
-		s.State.Sticky,
-		s.Config.Scheduling.Mode,
-		mappedModel,
-		sessionID,
-		s.Config.QuotaProtection.Enabled,
-	)
-	if acc == nil {
-		http.Error(w, "no available accounts (all disabled, rate-limited, or quota-protected)",
-			http.StatusServiceUnavailable)
-		return
-	}
-	if sessionID != "" {
-		s.State.Sticky.Bind(sessionID, acc.ID)
-	}
-
-	sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	requestN := s.State.NextRequestN()
-
-	accessToken, ok := s.ensureFreshToken(acc, mappedModel, originalModel, clientIP, apiKeyID, w)
-	if !ok {
-		return
-	}
-
-	available := acc.AvailableModels()
-	effectiveModel := mappedModel
-	if len(available) > 0 {
-		effectiveModel = ResolveModelForAccount(mappedModel, available)
-	}
-
-	upstreamBody := TransformRequest(openaiReq, acc.ProjectID, sessionUUID, requestN)
-	upstreamBody["model"] = effectiveModel
-
-	bodyBytes, _ := json.Marshal(upstreamBody)
-	resp, err := SendRequest(s.HTTP, accessToken, acc.ProjectID, bodyBytes, stream)
-	if err != nil {
-		log.Printf("upstream request failed: %v", err)
-		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-			HasAccountID: true, AccountID: acc.ID,
-			HasModel: true, Model: originalModel,
-			Status: 502, HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: err.Error(),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-		})
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 429 || resp.StatusCode == 401 {
-		bodyText, _ := io.ReadAll(resp.Body)
-		secs := 60
-		if resp.StatusCode == 401 {
-			secs = 300
+	// Failover loop: try accounts until one succeeds or all are exhausted.
+	tried := make(map[int64]bool)
+	for attempt := 0; ; attempt++ {
+		acc := SelectAccount(
+			accounts,
+			s.State.RateLimiter,
+			s.State.Sticky,
+			s.Config.Scheduling.Mode,
+			mappedModel,
+			sessionID,
+			s.Config.QuotaProtection.Enabled,
+		)
+		if acc == nil {
+			http.Error(w,
+				"no available accounts (all disabled, rate-limited, "+
+					"or quota-protected)",
+				http.StatusServiceUnavailable)
+			return
 		}
-		s.State.RateLimiter.SetCooldown(acc.ID, mappedModel, secs)
-		_ = account.MarkError(s.State.DB, acc.ID, string(bodyText), resp.StatusCode == 401)
+		if tried[acc.ID] {
+			// Already tried this account — all accounts exhausted.
+			if attempt > 0 {
+				// Return the last error response we got.
+				http.Error(w,
+					"all accounts exhausted (quota or capacity)",
+					http.StatusServiceUnavailable)
+			} else {
+				http.Error(w,
+					"no available accounts (all disabled, rate-limited, "+
+						"or quota-protected)",
+					http.StatusServiceUnavailable)
+			}
+			return
+		}
+		tried[acc.ID] = true
+		if sessionID != "" {
+			s.State.Sticky.Bind(sessionID, acc.ID)
+		}
+
+		sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+		requestN := s.State.NextRequestN()
+
+		accessToken, ok := s.ensureFreshToken(
+			acc, mappedModel, originalModel, clientIP, apiKeyID, w)
+		if !ok {
+			return
+		}
+
+		available := acc.AvailableModels()
+		effectiveModel := mappedModel
+		if len(available) > 0 {
+			effectiveModel = ResolveModelForAccount(
+				mappedModel, available)
+		}
+
+		upstreamBody := TransformRequest(
+			openaiReq, acc.ProjectID, sessionUUID, requestN)
+		upstreamBody["model"] = effectiveModel
+
+		bodyBytes, _ := json.Marshal(upstreamBody)
+		resp, err := SendRequest(
+			s.HTTP, accessToken, acc.ProjectID, bodyBytes, stream)
+		if err != nil {
+			log.Printf("upstream request failed: %v", err)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: 502, HasClientIP: clientIP != "",
+				ClientIP: clientIP,
+				HasError: true, Error: err.Error(),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			http.Error(w, "upstream request failed",
+				http.StatusBadGateway)
+			return
+		}
+
+		// Retryable: 429 (quota) or 503 (capacity) → failover.
+		if isRetryableStatus(resp.StatusCode) {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, mappedModel, 60)
+			_ = account.MarkError(s.State.DB, acc.ID,
+				string(bodyText), false)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			if sessionID != "" {
+				s.State.Sticky.Unbind(sessionID)
+			}
+			log.Printf("failover: account %s got %d for %s, "+
+				"trying next", acc.Email, resp.StatusCode,
+				originalModel)
+			continue
+		}
+
+		// 401: token issue — set longer cooldown, no failover.
+		if resp.StatusCode == 401 {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, mappedModel, 300)
+			_ = account.MarkError(s.State.DB, acc.ID,
+				string(bodyText), true)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(bodyText)
+			return
+		}
+
+		// Other non-2xx: return to client, no failover.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(bodyText)
+			return
+		}
+
+		// Success path.
+		_ = account.MarkUsed(s.State.DB, acc.ID, 0, false)
+		s.State.RateLimiter.Clear(acc.ID)
+
+		if stream {
+			chatID := "chatcmpl-" + compactUUID()
+			created := time.Now().Unix()
+			s.streamOpenAISSE(w, resp.Body, chatID, created,
+				originalModel, acc.ID, apiKeyID, clientIP)
+			resp.Body.Close()
+			return
+		}
+
+		bodyBytes2, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			http.Error(w, "read upstream body: "+err.Error(),
+				http.StatusBadGateway)
+			return
+		}
+		var geminiResp map[string]any
+		if err := json.Unmarshal(bodyBytes2, &geminiResp); err != nil {
+			http.Error(w, fmt.Sprintf(
+				"invalid upstream JSON: %v | body: %s",
+				err, string(bodyBytes2)),
+				http.StatusBadGateway)
+			return
+		}
+
+		openaiResp := TransformResponse(geminiResp, originalModel)
+		usage, _ := openaiResp["usage"].(map[string]any)
+		promptTokens := int64Or(usage, "prompt_tokens", 0)
+		completionTokens := int64Or(usage, "completion_tokens", 0)
+		cachedTokens := int64Or(usage, "cached_tokens", 0)
+		thoughtTokens := int64Or(usage, "thought_tokens", 0)
+		cost := ComputeCost(originalModel, promptTokens,
+			completionTokens, cachedTokens)
 		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 			HasAccountID: true, AccountID: acc.ID,
 			HasModel: true, Model: originalModel,
-			Status: int64(resp.StatusCode),
+			HasPromptTokens: true, PromptTokens: promptTokens,
+			HasCompletion: true, CompletionTokens: completionTokens,
+			HasCached: true, CachedTokens: cachedTokens,
+			HasThought: true, ThoughtTokens: thoughtTokens,
+			Status: 200,
 			HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: string(bodyText),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
+			HasCost: true, CostUSD: cost,
+			HasAPIKeyID: apiKeyID != nil,
+			APIKeyID:   derefInt64(apiKeyID),
 		})
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyText)
+		writeJSON(w, http.StatusOK, openaiResp)
 		return
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyText, _ := io.ReadAll(resp.Body)
-		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-			HasAccountID: true, AccountID: acc.ID,
-			HasModel: true, Model: originalModel,
-			Status: int64(resp.StatusCode),
-			HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: string(bodyText),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-		})
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyText)
-		return
-	}
-
-	// Success path.
-	_ = account.MarkUsed(s.State.DB, acc.ID, 0, false)
-	s.State.RateLimiter.Clear(acc.ID)
-
-	if stream {
-		chatID := "chatcmpl-" + compactUUID()
-		created := time.Now().Unix()
-		s.streamOpenAISSE(w, resp.Body, chatID, created, originalModel, acc.ID, apiKeyID, clientIP)
-		return
-	}
-
-	bodyBytes2, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "read upstream body: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	var geminiResp map[string]any
-	if err := json.Unmarshal(bodyBytes2, &geminiResp); err != nil {
-		http.Error(w, fmt.Sprintf("invalid upstream JSON: %v | body: %s", err, string(bodyBytes2)),
-			http.StatusBadGateway)
-		return
-	}
-
-	openaiResp := TransformResponse(geminiResp, originalModel)
-	usage, _ := openaiResp["usage"].(map[string]any)
-	promptTokens := int64Or(usage, "prompt_tokens", 0)
-	completionTokens := int64Or(usage, "completion_tokens", 0)
-	cachedTokens := int64Or(usage, "cached_tokens", 0)
-	thoughtTokens := int64Or(usage, "thought_tokens", 0)
-	cost := ComputeCost(originalModel, promptTokens, completionTokens, cachedTokens)
-	_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-		HasAccountID: true, AccountID: acc.ID,
-		HasModel: true, Model: originalModel,
-		HasPromptTokens: true, PromptTokens: promptTokens,
-		HasCompletion: true, CompletionTokens: completionTokens,
-		HasCached: true, CachedTokens: cachedTokens,
-		HasThought: true, ThoughtTokens: thoughtTokens,
-		Status: 200,
-		HasClientIP: clientIP != "", ClientIP: clientIP,
-		HasCost: true, CostUSD: cost,
-		HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-	})
-	writeJSON(w, http.StatusOK, openaiResp)
+	} // end failover loop
 }
 
 // ---------------------------------------------------------------------------
@@ -293,131 +368,198 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		sessionID, _ = md["user_id"].(string)
 	}
 
-	acc := SelectAccount(
-		accounts,
-		s.State.RateLimiter,
-		s.State.Sticky,
-		s.Config.Scheduling.Mode,
-		mappedModel,
-		sessionID,
-		s.Config.QuotaProtection.Enabled,
-	)
-	if acc == nil {
-		http.Error(w, "no available accounts (all disabled, rate-limited, or quota-protected)",
-			http.StatusServiceUnavailable)
-		return
-	}
-	if sessionID != "" {
-		s.State.Sticky.Bind(sessionID, acc.ID)
-	}
-
-	sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	requestN := s.State.NextRequestN()
-
-	accessToken, ok := s.ensureFreshToken(acc, mappedModel, originalModel, clientIP, apiKeyID, w)
-	if !ok {
-		return
-	}
-
-	available := acc.AvailableModels()
-	effectiveModel := mappedModel
-	if len(available) > 0 {
-		effectiveModel = ResolveModelForAccount(mappedModel, available)
-	}
-
-	upstreamBody := AnthropicTransformRequest(anthropicReq, acc.ProjectID, sessionUUID, requestN)
-	upstreamBody["model"] = effectiveModel
-
-	bodyBytes, _ := json.Marshal(upstreamBody)
-	resp, err := SendRequest(s.HTTP, accessToken, acc.ProjectID, bodyBytes, stream)
-	if err != nil {
-		log.Printf("upstream request failed: %v", err)
-		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-			HasAccountID: true, AccountID: acc.ID,
-			HasModel: true, Model: originalModel,
-			Status: 502, HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: err.Error(),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-		})
-		http.Error(w, "upstream request failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == 429 || resp.StatusCode == 401 {
-		bodyText, _ := io.ReadAll(resp.Body)
-		secs := 60
-		if resp.StatusCode == 401 {
-			secs = 300
+	// Failover loop: try accounts until one succeeds or all are exhausted.
+	tried := make(map[int64]bool)
+	for attempt := 0; ; attempt++ {
+		acc := SelectAccount(
+			accounts,
+			s.State.RateLimiter,
+			s.State.Sticky,
+			s.Config.Scheduling.Mode,
+			mappedModel,
+			sessionID,
+			s.Config.QuotaProtection.Enabled,
+		)
+		if acc == nil {
+			http.Error(w,
+				"no available accounts (all disabled, rate-limited, "+
+					"or quota-protected)",
+				http.StatusServiceUnavailable)
+			return
 		}
-		s.State.RateLimiter.SetCooldown(acc.ID, mappedModel, secs)
-		_ = account.MarkError(s.State.DB, acc.ID, string(bodyText), resp.StatusCode == 401)
+		if tried[acc.ID] {
+			if attempt > 0 {
+				http.Error(w,
+					"all accounts exhausted (quota or capacity)",
+					http.StatusServiceUnavailable)
+			} else {
+				http.Error(w,
+					"no available accounts (all disabled, rate-limited, "+
+						"or quota-protected)",
+					http.StatusServiceUnavailable)
+			}
+			return
+		}
+		tried[acc.ID] = true
+		if sessionID != "" {
+			s.State.Sticky.Bind(sessionID, acc.ID)
+		}
+
+		sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+		requestN := s.State.NextRequestN()
+
+		accessToken, ok := s.ensureFreshToken(
+			acc, mappedModel, originalModel, clientIP, apiKeyID, w)
+		if !ok {
+			return
+		}
+
+		available := acc.AvailableModels()
+		effectiveModel := mappedModel
+		if len(available) > 0 {
+			effectiveModel = ResolveModelForAccount(
+				mappedModel, available)
+		}
+
+		upstreamBody := AnthropicTransformRequest(
+			anthropicReq, acc.ProjectID, sessionUUID, requestN)
+		upstreamBody["model"] = effectiveModel
+
+		bodyBytes, _ := json.Marshal(upstreamBody)
+		resp, err := SendRequest(
+			s.HTTP, accessToken, acc.ProjectID, bodyBytes, stream)
+		if err != nil {
+			log.Printf("upstream request failed: %v", err)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: 502, HasClientIP: clientIP != "",
+				ClientIP: clientIP,
+				HasError: true, Error: err.Error(),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			http.Error(w, "upstream request failed",
+				http.StatusBadGateway)
+			return
+		}
+
+		// Retryable: 429 (quota) or 503 (capacity) → failover.
+		if isRetryableStatus(resp.StatusCode) {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, mappedModel, 60)
+			_ = account.MarkError(s.State.DB, acc.ID,
+				string(bodyText), false)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			if sessionID != "" {
+				s.State.Sticky.Unbind(sessionID)
+			}
+			log.Printf("failover: account %s got %d for %s, "+
+				"trying next", acc.Email, resp.StatusCode,
+				originalModel)
+			continue
+		}
+
+		// 401: token issue — set longer cooldown, no failover.
+		if resp.StatusCode == 401 {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, mappedModel, 300)
+			_ = account.MarkError(s.State.DB, acc.ID,
+				string(bodyText), true)
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(bodyText)
+			return
+		}
+
+		// Other non-2xx: return to client, no failover.
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
+				HasAccountID: true, AccountID: acc.ID,
+				HasModel: true, Model: originalModel,
+				Status: int64(resp.StatusCode),
+				HasClientIP: clientIP != "", ClientIP: clientIP,
+				HasError: true, Error: string(bodyText),
+				HasAPIKeyID: apiKeyID != nil,
+				APIKeyID:   derefInt64(apiKeyID),
+			})
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(bodyText)
+			return
+		}
+
+		// Success path.
+		_ = account.MarkUsed(s.State.DB, acc.ID, 0, false)
+		s.State.RateLimiter.Clear(acc.ID)
+
+		if stream {
+			s.streamAnthropicSSE(w, resp.Body, originalModel,
+				acc.ID, apiKeyID, clientIP)
+			resp.Body.Close()
+			return
+		}
+
+		bodyBytes2, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			http.Error(w, "read upstream body: "+err.Error(),
+				http.StatusBadGateway)
+			return
+		}
+		var geminiResp map[string]any
+		if err := json.Unmarshal(bodyBytes2, &geminiResp); err != nil {
+			http.Error(w, fmt.Sprintf(
+				"invalid upstream JSON: %v | body: %s",
+				err, string(bodyBytes2)),
+				http.StatusBadGateway)
+			return
+		}
+
+		anthropicResp := AnthropicTransformResponse(
+			geminiResp, originalModel)
+		usage, _ := anthropicResp["usage"].(map[string]any)
+		promptTokens := int64Or(usage, "input_tokens", 0)
+		completionTokens := int64Or(usage, "output_tokens", 0)
+		cachedTokens := int64Or(usage, "cache_read_input_tokens", 0)
+		cost := ComputeCost(originalModel, promptTokens,
+			completionTokens, cachedTokens)
 		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 			HasAccountID: true, AccountID: acc.ID,
 			HasModel: true, Model: originalModel,
-			Status: int64(resp.StatusCode),
+			HasPromptTokens: true, PromptTokens: promptTokens,
+			HasCompletion: true, CompletionTokens: completionTokens,
+			HasCached: true, CachedTokens: cachedTokens,
+			Status: 200,
 			HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: string(bodyText),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
+			HasCost: true, CostUSD: cost,
+			HasAPIKeyID: apiKeyID != nil,
+			APIKeyID:   derefInt64(apiKeyID),
 		})
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyText)
+		writeJSON(w, http.StatusOK, anthropicResp)
 		return
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		bodyText, _ := io.ReadAll(resp.Body)
-		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-			HasAccountID: true, AccountID: acc.ID,
-			HasModel: true, Model: originalModel,
-			Status: int64(resp.StatusCode),
-			HasClientIP: clientIP != "", ClientIP: clientIP,
-			HasError: true, Error: string(bodyText),
-			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-		})
-		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(bodyText)
-		return
-	}
-
-	_ = account.MarkUsed(s.State.DB, acc.ID, 0, false)
-	s.State.RateLimiter.Clear(acc.ID)
-
-	if stream {
-		s.streamAnthropicSSE(w, resp.Body, originalModel, acc.ID, apiKeyID, clientIP)
-		return
-	}
-
-	bodyBytes2, err := io.ReadAll(resp.Body)
-	if err != nil {
-		http.Error(w, "read upstream body: "+err.Error(), http.StatusBadGateway)
-		return
-	}
-	var geminiResp map[string]any
-	if err := json.Unmarshal(bodyBytes2, &geminiResp); err != nil {
-		http.Error(w, fmt.Sprintf("invalid upstream JSON: %v | body: %s", err, string(bodyBytes2)),
-			http.StatusBadGateway)
-		return
-	}
-
-	anthropicResp := AnthropicTransformResponse(geminiResp, originalModel)
-	usage, _ := anthropicResp["usage"].(map[string]any)
-	promptTokens := int64Or(usage, "input_tokens", 0)
-	completionTokens := int64Or(usage, "output_tokens", 0)
-	cachedTokens := int64Or(usage, "cache_read_input_tokens", 0)
-	cost := ComputeCost(originalModel, promptTokens, completionTokens, cachedTokens)
-	_ = account.LogRequest(s.State.DB, account.LogRequestParams{
-		HasAccountID: true, AccountID: acc.ID,
-		HasModel: true, Model: originalModel,
-		HasPromptTokens: true, PromptTokens: promptTokens,
-		HasCompletion: true, CompletionTokens: completionTokens,
-		HasCached: true, CachedTokens: cachedTokens,
-		Status: 200,
-		HasClientIP: clientIP != "", ClientIP: clientIP,
-		HasCost: true, CostUSD: cost,
-		HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
-	})
-	writeJSON(w, http.StatusOK, anthropicResp)
+	} // end failover loop
 }
 
 func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
