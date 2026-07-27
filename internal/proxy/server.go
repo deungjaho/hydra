@@ -1209,6 +1209,7 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 			s.State.healthFailures.Delete(acc.ID)
 			// Check if it was previously unhealthy (notifier tracks state).
 			s.State.Notifier.NotifyAccountRecovered(acc.Email)
+			log.Printf("health check: %s OK", acc.Email)
 			continue
 		}
 
