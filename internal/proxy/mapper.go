@@ -335,7 +335,11 @@ func openAIMessageToContent(msg map[string]any, toolNameMap map[string]string) m
 
 	// reasoning_content → thought part
 	if rc, ok := msg["reasoning_content"].(string); ok && rc != "" {
-		parts = append(parts, map[string]any{"text": rc, "thought": true})
+		parts = append(parts, map[string]any{
+			"text":             rc,
+			"thought":          true,
+			"thoughtSignature": "skip_thought_signature_validator",
+		})
 	}
 
 	// text content / multimodal content

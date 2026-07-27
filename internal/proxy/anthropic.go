@@ -173,9 +173,10 @@ func anthropicMessageToContent(msg map[string]any, toolNameMap map[string]string
 				}
 			case "thinking":
 				if t, ok := block["thinking"].(string); ok && strings.TrimSpace(t) != "" {
-					part := map[string]any{"text": t, "thought": true}
-					if sig, ok := block["signature"].(string); ok {
-						part["thoughtSignature"] = sig
+					part := map[string]any{
+						"text":            t,
+						"thought":         true,
+						"thoughtSignature": "skip_thought_signature_validator",
 					}
 					parts = append(parts, part)
 				}
