@@ -22,15 +22,18 @@ import (
 type ProxyServer struct {
 	Config *config.AppConfig
 	State  *ProxyState
-	HTTP   *http.Client
+	HTTP   *http.Client // uTLS client for Gemini upstream
+	OAuth  *http.Client // standard client for OAuth/quota (no uTLS)
 }
 
-// NewProxyServer builds a ProxyServer with a uTLS-backed upstream client.
+// NewProxyServer builds a ProxyServer with a uTLS-backed upstream client
+// and a standard HTTP client for OAuth token refresh / quota fetch.
 func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 	return &ProxyServer{
 		Config: cfg,
 		State:  state,
 		HTTP:   NewUTLSClient(300*time.Second, cfg.Proxy.UpstreamProxy),
+		OAuth:  NewHTTPClient(60*time.Second, cfg.Proxy.UpstreamProxy),
 	}
 }
 
@@ -672,11 +675,19 @@ func (s *ProxyServer) ensureFreshToken(
 	if !account.NeedsRefresh(acc.ExpiresAt) {
 		return acc.AccessToken, true
 	}
-	tok, expiresAt, err := account.RefreshToken(s.HTTP, acc.RefreshToken)
+	tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
 	if err != nil {
 		log.Printf("refresh token failed for account %d: %v", acc.ID, err)
-		s.State.RateLimiter.SetCooldown(acc.ID, mappedModel, 300)
-		_ = account.MarkError(s.State.DB, acc.ID, err.Error(), true)
+		// Only disable on invalid_grant (refresh token revoked/expired).
+		// Network errors (uTLS handshake EOF, timeout, etc.) are transient
+		// — just set a cooldown so the account is retried later.
+		disable := strings.Contains(err.Error(), "invalid_grant")
+		secs := 300
+		if disable {
+			secs = 3600
+		}
+		s.State.RateLimiter.SetCooldown(acc.ID, mappedModel, secs)
+		_ = account.MarkError(s.State.DB, acc.ID, err.Error(), disable)
 		_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 			HasAccountID: true, AccountID: acc.ID,
 			HasModel: true, Model: originalModel,
@@ -684,7 +695,13 @@ func (s *ProxyServer) ensureFreshToken(
 			HasError: true, Error: err.Error(),
 			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
 		})
-		http.Error(w, "account token refresh failed", http.StatusBadGateway)
+		if disable {
+			http.Error(w, "account token refresh failed (invalid_grant)",
+				http.StatusBadGateway)
+		} else {
+			http.Error(w, "account token refresh failed (transient)",
+				http.StatusBadGateway)
+		}
 		return "", false
 	}
 	if err := account.UpdateTokens(s.State.DB, acc.ID, tok, expiresAt, ""); err != nil {
@@ -1056,7 +1073,7 @@ func (s *ProxyServer) refreshExpiringTokens() {
 		if acc.Disabled || !account.NeedsRefresh(acc.ExpiresAt) {
 			continue
 		}
-		tok, expiresAt, err := account.RefreshToken(s.HTTP, acc.RefreshToken)
+		tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
 		if err != nil {
 			log.Printf("proactive token refresh failed for %s: %v", acc.Email, err)
 			continue
@@ -1089,7 +1106,7 @@ func RefreshAllQuotas(s *ProxyServer) error {
 		}
 		accessToken := acc.AccessToken
 		if account.NeedsRefresh(acc.ExpiresAt) {
-			tok, expiresAt, err := account.RefreshToken(s.HTTP, acc.RefreshToken)
+			tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
 			if err != nil {
 				log.Printf("refresh token failed for %s: %v", acc.Email, err)
 				continue
@@ -1099,7 +1116,7 @@ func RefreshAllQuotas(s *ProxyServer) error {
 			}
 			accessToken = tok
 		}
-		fetched, err := account.FetchQuota(s.HTTP, accessToken, acc.ProjectID)
+		fetched, err := account.FetchQuota(s.OAuth, accessToken, acc.ProjectID)
 		if err != nil {
 			log.Printf("fetch quota failed for %s: %v", acc.Email, err)
 			continue
