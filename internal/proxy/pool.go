@@ -242,6 +242,8 @@ type ProxyState struct {
 	requestCounter muCounter
 	startedAt      time.Time
 	metrics        metricsCollector
+	Notifier       Notifier
+	healthFailures sync.Map // accountID (int64) → consecutive failure count (int)
 }
 
 // metricsCollector tracks in-memory request metrics for Prometheus.
@@ -302,6 +304,7 @@ func NewProxyState(d *db.Db) *ProxyState {
 		Sticky:      NewStickySessions(),
 		startedAt:   time.Now(),
 		metrics:     newMetricsCollector(),
+		Notifier:    NewLogNotifier(),
 	}
 }
 

@@ -41,9 +41,13 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 func (s *ProxyServer) Serve() error {
 	addr := fmt.Sprintf("%s:%d", s.Config.Proxy.Bind, s.Config.Proxy.Port)
 
-	// Background loops: token refresher (1-min) + quota refresher (5-min).
+	// Background loops: token refresher (1-min) + quota refresher (5-min)
+	// + health check (configurable interval, default 2-min).
 	go s.tokenRefresherLoop()
 	go s.quotaRefresherLoop()
+	if s.Config.HealthCheck.Enabled {
+		go s.healthCheckLoop()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
@@ -1139,7 +1143,134 @@ func RefreshAllQuotas(s *ProxyServer) error {
 			log.Printf("persist quota failed for %s: %v", acc.Email, err)
 			continue
 		}
-		log.Printf("refreshed quota for %s (max=%d%%, protected=%v)", acc.Email, fetched.MaxPercentage, newProtected)
+	log.Printf("refreshed quota for %s (max=%d%%, protected=%v)", acc.Email, fetched.MaxPercentage, newProtected)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Health check (background connectivity probe)
+// ---------------------------------------------------------------------------
+
+// healthCheckLoop runs a periodic connectivity probe against every
+// non-disabled account. It calls fetchAvailableModels (lightweight, no
+// quota cost) to verify token validity + upstream reachability.
+//
+// On failure:
+//   - increments the account's consecutive-failure counter
+//   - fires a Notifier notification
+//   - after FailureThreshold consecutive failures, auto-disables the
+//     account (protects against repeatedly hitting dead accounts)
+//
+// On success:
+//   - resets the failure counter
+//   - if the account was previously unhealthy, fires a recovery notification
+func (s *ProxyServer) healthCheckLoop() {
+	interval := time.Duration(s.Config.HealthCheck.IntervalSeconds) * time.Second
+	if interval < 10*time.Second {
+		interval = 10 * time.Second
+	}
+	threshold := s.Config.HealthCheck.FailureThreshold
+	if threshold < 1 {
+		threshold = 3
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Run once immediately at startup, then on every tick.
+	s.runHealthCheck(threshold)
+	for range ticker.C {
+		s.runHealthCheck(threshold)
+	}
+}
+
+func (s *ProxyServer) runHealthCheck(threshold int) {
+	accounts, err := account.ListAccounts(s.State.DB)
+	if err != nil {
+		log.Printf("health check: list accounts failed: %v", err)
+		return
+	}
+
+	var allDown []AccountHealth
+	for _, acc := range accounts {
+		if acc.Disabled {
+			continue
+		}
+		healthy, reason := s.probeAccount(acc)
+		ah := AccountHealth{
+			Email:    acc.Email,
+			Healthy:  healthy,
+			Reason:   reason,
+			Disabled: acc.Disabled,
+		}
+
+		if healthy {
+			s.State.healthFailures.Delete(acc.ID)
+			// Check if it was previously unhealthy (notifier tracks state).
+			s.State.Notifier.NotifyAccountRecovered(acc.Email)
+			continue
+		}
+
+		// Unhealthy — increment failure counter.
+		count := s.incrementHealthFailure(acc.ID)
+		s.State.Notifier.NotifyAccountUnhealthy(acc.Email, reason)
+
+		if count >= threshold {
+			log.Printf("health check: %s failed %d times, auto-disabling",
+				acc.Email, count)
+			_ = account.MarkError(s.State.DB, acc.ID,
+				"health check: "+reason, true)
+			s.State.healthFailures.Delete(acc.ID)
+			s.State.RateLimiter.Clear(acc.ID)
+		}
+		allDown = append(allDown, ah)
+	}
+
+	// If every non-disabled account is down, fire the all-down alert.
+	if len(allDown) > 0 && len(allDown) == countNonDisabled(accounts) {
+		s.State.Notifier.NotifyAllAccountsDown(allDown)
+	}
+}
+
+// probeAccount does the actual connectivity test. It first ensures
+// the token is fresh, then calls ProbeAccount (fetchAvailableModels).
+func (s *ProxyServer) probeAccount(acc *account.Account) (bool, string) {
+	accessToken := acc.AccessToken
+	if account.NeedsRefresh(acc.ExpiresAt) {
+		tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
+		if err != nil {
+			return false, fmt.Sprintf("token refresh: %v", err)
+		}
+		if err := account.UpdateTokens(s.State.DB, acc.ID, tok, expiresAt, ""); err != nil {
+			log.Printf("health check: persist token for %s: %v", acc.Email, err)
+		}
+		accessToken = tok
+	}
+
+	if err := account.ProbeAccount(s.OAuth, accessToken, acc.ProjectID); err != nil {
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (s *ProxyServer) incrementHealthFailure(id int64) int {
+	v, _ := s.State.healthFailures.Load(id)
+	count := 0
+	if v != nil {
+		count = v.(int)
+	}
+	count++
+	s.State.healthFailures.Store(id, count)
+	return count
+}
+
+func countNonDisabled(accounts []*account.Account) int {
+	n := 0
+	for _, a := range accounts {
+		if !a.Disabled {
+			n++
+		}
+	}
+	return n
 }

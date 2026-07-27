@@ -378,3 +378,17 @@ func TestParseSummary_DisabledFlag(t *testing.T) {
 		t.Error("disabled should be true")
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	if got := truncate("short", 200); got != "short" {
+		t.Errorf("truncate short: got %q", got)
+	}
+	long := strings.Repeat("x", 300)
+	got := truncate(long, 200)
+	if !strings.HasSuffix(got, "...") {
+		t.Error("should end with ...")
+	}
+	if len(got) != 203 {
+		t.Errorf("length = %d, want 203", len(got))
+	}
+}

@@ -15,6 +15,7 @@ type AppConfig struct {
 	Server          ServerConfig          `toml:"server"`
 	Scheduling      SchedulingConfig      `toml:"scheduling"`
 	QuotaProtection QuotaProtectionConfig `toml:"quota_protection"`
+	HealthCheck     HealthCheckConfig     `toml:"health_check"`
 }
 
 type ProxyConfig struct {
@@ -49,6 +50,22 @@ type QuotaProtectionConfig struct {
 	Enabled             bool     `toml:"enabled"`
 	ThresholdPercentage int      `toml:"threshold_percentage"`
 	MonitoredModels     []string `toml:"monitored_models"`
+}
+
+// HealthCheckConfig controls the background connectivity probe.
+// Every interval seconds, each non-disabled account is probed by
+// calling fetchAvailableModels (lightweight, no quota consumption).
+// If an account fails, a notification is fired via the Notifier
+// interface. After consecutive_failures_threshold consecutive
+// failures, the account is auto-disabled.
+type HealthCheckConfig struct {
+	Enabled              bool   `toml:"enabled"`
+	IntervalSeconds      int    `toml:"interval_seconds"`
+	TimeoutSeconds       int    `toml:"timeout_seconds"`
+	FailureThreshold     int    `toml:"failure_threshold"`
+	// NotifyWebhook is reserved for future webhook notifications.
+	// When non-empty, health events are POSTed as JSON to this URL.
+	NotifyWebhook string `toml:"notify_webhook"`
 }
 
 func defaultProxy() ProxyConfig {
@@ -90,12 +107,22 @@ func defaultQuotaProtection() QuotaProtectionConfig {
 	}
 }
 
+func defaultHealthCheck() HealthCheckConfig {
+	return HealthCheckConfig{
+		Enabled:          true,
+		IntervalSeconds:  120,
+		TimeoutSeconds:   15,
+		FailureThreshold: 3,
+	}
+}
+
 func Default() AppConfig {
 	return AppConfig{
 		Proxy:           defaultProxy(),
 		Server:          defaultServer(),
 		Scheduling:      defaultScheduling(),
 		QuotaProtection: defaultQuotaProtection(),
+		HealthCheck:     defaultHealthCheck(),
 	}
 }
 
@@ -169,6 +196,14 @@ func applyEnvOverrides(cfg *AppConfig) {
 			cfg.Scheduling.Mode = SchedulingBalance
 		case "performance":
 			cfg.Scheduling.Mode = SchedulingPerformance
+		}
+	}
+	if v := os.Getenv("HYDRA_HEALTH_CHECK_ENABLED"); v != "" {
+		cfg.HealthCheck.Enabled = v == "true" || v == "1" || v == "yes"
+	}
+	if v := os.Getenv("HYDRA_HEALTH_CHECK_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.HealthCheck.IntervalSeconds = n
 		}
 	}
 }

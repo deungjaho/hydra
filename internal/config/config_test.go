@@ -34,6 +34,17 @@ func TestDefault(t *testing.T) {
 	if len(cfg.QuotaProtection.MonitoredModels) == 0 {
 		t.Error("MonitoredModels should not be empty")
 	}
+	if !cfg.HealthCheck.Enabled {
+		t.Error("HealthCheck.Enabled should be true")
+	}
+	if cfg.HealthCheck.IntervalSeconds != 120 {
+		t.Errorf("HealthCheck.IntervalSeconds = %d, want 120",
+			cfg.HealthCheck.IntervalSeconds)
+	}
+	if cfg.HealthCheck.FailureThreshold != 3 {
+		t.Errorf("HealthCheck.FailureThreshold = %d, want 3",
+			cfg.HealthCheck.FailureThreshold)
+	}
 }
 
 func TestDefaultPtr(t *testing.T) {

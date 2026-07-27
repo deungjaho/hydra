@@ -261,6 +261,45 @@ func parseSummary(body string) (string, []QuotaWindowInfo) {
 	return string(b), windows
 }
 
+// ProbeAccount does a lightweight connectivity check by calling
+// fetchAvailableModels only. This consumes no quota and verifies:
+//   - access token is valid (not expired)
+//   - upstream endpoints are reachable
+//   - project ID is correct
+//
+// Returns nil if healthy, or an error describing the failure.
+func ProbeAccount(client *http.Client, accessToken, projectID string) error {
+	payload := []byte("{}")
+	if projectID != "" {
+		payload, _ = json.Marshal(map[string]string{"project": projectID})
+	}
+	var lastErr error
+	for _, host := range quotaHosts {
+		modelsURL := host + "/v1internal:fetchAvailableModels"
+		resp, err := postJSON(client, modelsURL, accessToken, payload)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.status >= 200 && resp.status < 300 {
+			return nil
+		}
+		lastErr = fmt.Errorf("probe %s: HTTP %d: %s",
+			host, resp.status, truncate(resp.body, 200))
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("probe: all quota endpoints unreachable")
+	}
+	return lastErr
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
 // ComputeProtectedModels decides which models should be marked as protected.
 // A model is protected when its remaining percentage falls below threshold.
 // Models already protected but now above the threshold are removed (recovered).
