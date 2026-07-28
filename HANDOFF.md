@@ -1,9 +1,11 @@
 # Hydra 阶段交接文档
 
-**最后更新**: 2026-07-28 21:50
+**最后更新**: 2026-07-28 22:05
 **代码验收基线**: `db75385` P2-A.1: CLI contract closure
-**tag target**: 本文档修正后的最终 HEAD（含交接文档）
-**建议 source-stage tag**: `v0.5.0-alpha.1` (未打)
+**tag target**: `4d5b63e` Separate code baseline from tag target in handoff header
+**source-stage tag**: `v0.5.0-alpha.1` (annotated, 已打 → `4d5b63e`)
+
+> **source-complete ≠ deployment-complete**：tag 标记源码阶段完成（format/vet/race/build/224 测试通过），但新二进制从未在 omarchy 运行过，旧 DB 迁移、账号恢复、真实上游 smoke 均未验证。deployment-complete 需要第 6 节 checklist 全部勾选且 smoke 通过。
 
 ---
 
@@ -44,8 +46,10 @@
 
 ## 2. 部署 GAP
 
-omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
-源码 HEAD = `db75385` (Jul 28 18:39)。**落后 8 个 commit**。
+omarchy 生产部署版本推断为 `v0.4.16` (commit `dfce59b`, Jul 27 19:42)。
+**推断依据**：部署二进制无 `version` 子命令（`hydra version` 报 unknown command），无法直接读取 commit；但行为探测与 v0.4.16 一致（`/metrics` 无 key → 200、`/v1/models` 无 key → 200、DB `user_version=0`、accounts 表无 `health_disabled`/`operator_disabled` 列）。**未做二进制 hash 比对**，若需精确确认需在 omarchy 上 `sha256sum ~/.local/bin/hydra` 与本地 `v0.4.16` 构建产物比对。
+
+源码 tag target = `4d5b63e` (Jul 28 21:29)，代码验收基线 = `db75385` (Jul 28 18:39)，两者间仅 3 个文档提交（HANDOFF.md），**无代码变更**。相对部署版本落后 8 个代码 commit。
 
 **部署未验证**：以下 GAP 基于源码审查和 omarchy 只读探测，新二进制从未在 omarchy 上运行过。
 
@@ -64,7 +68,7 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 | `618b2ac` | P2-A: application service, JSON output | CLI 无 --output/--version/status/doctor | 低 |
 | `db75385` | P2-A.1: CLI contract closure | 错误渲染不统一，无 exit code 映射 | 低 |
 
-### 生产环境实测结果 (2026-07-28 21:00，只读探测)
+### 生产环境实测结果 (2026-07-28 21:55，只读探测)
 
 | 端点 | 部署版本响应 | HEAD 源码预期 |
 |------|-------------|--------------|
@@ -73,7 +77,8 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 | `/livez` | 404 | 404 (P2-C 未实现) |
 | `/metrics` (无 key) | **200** | **401** |
 | `/v1/models` (无 key) | **200** | **401** |
-| `/v1/chat/completions` (有 key) | "no available accounts" | 同 (账号全 disabled) |
+| `/v1/chat/completions` (无 key) | **401** | 401 (chat 端点鉴权未变) |
+| `/v1/chat/completions` (bogus key) | 401 "unauthorized" | 401 (同) |
 
 | DB 维度 | 部署版本值 | HEAD 源码预期 |
 |---------|-----------|--------------|
@@ -82,11 +87,16 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 | DB 权限 | 644 | 600 |
 | WAL 权限 | 644 | 600 |
 | SHM 权限 | 644 | 600 |
+| WAL 大小 | ~4MB | 迁移时 ALTER 会追加写入 |
 
-| 账号状态 | 值 |
+| 服务维度 | 值 |
 |----------|-----|
-| account #2 | disabled=1, last_error=health check EOF, token 过期 21h, quota=100 |
-| account #3 | disabled=1, last_error=health check EOF, token 过期 21h, quota=100 |
+| systemd `hydra.service` | active (running), enabled |
+| 进程启动时间 | 2026-07-28 19:55:12 CST |
+| kernel | 7.1.3-arch2-2 x86_64 |
+| 二进制 mtime | Jul 27 21:00 |
+
+**账号状态**：账号可用性与真实上游 smoke 未在授权窗口验证。迁移后需 operator 在授权窗口手动 enable 并验证（详见第 4 节）。
 
 ---
 
@@ -105,14 +115,14 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 
 ### 风险：backfill 语义错误
 
-两个账号实际是 **health check EOF** 导致的 disabled，但旧 schema 无法区分 health-disabled 和 operator-disabled。backfill 会把它们标为 `operator_disabled=1`（人工禁用）。
+旧 schema 只有单一 `disabled` 列，无法区分 health-disabled 和 operator-disabled。backfill 把所有 `disabled=1 AND health_disabled=0` 的账号标为 `operator_disabled=1`（人工禁用）。
 
 **后果**：
 - 新二进制的 health check 自动恢复逻辑只看 `health_disabled`，不看 `operator_disabled`
-- 迁移后两个账号不会自动恢复，必须手动 `hydra accounts enable 2 && hydra accounts enable 3`
+- 迁移后所有被 backfill 标记的账号不会自动恢复，必须 operator 手动 `hydra accounts enable <id>`
 - 这是一次性操作，`user_version=9` 防止 backfill 重复执行
 
-**缓解**：迁移后立即手动 enable 两个账号，让 health check 重新探测。
+**缓解**：迁移后由 operator 在授权窗口手动 enable 受影响账号，让 health check 重新探测。
 
 ### 风险：WAL checkpoint
 
@@ -131,40 +141,42 @@ UPDATE accounts SET operator_disabled = ? WHERE id = ?
 UPDATE accounts SET disabled = ? WHERE id = ?
 ```
 
-迁移后用新代码 `hydra accounts enable 2` 会设置 `operator_disabled=0`，但 `disabled` 列仍为 1。如果回退到旧二进制，旧代码读 `disabled=1` → 账号仍 disabled。详见下方 Rollback 方案 A 的状态语义退化说明。
+迁移后用新代码 `hydra accounts enable <id>` 会设置 `operator_disabled=0`，但 `disabled` 列仍为 1。如果回退到旧二进制，旧代码读 `disabled=1` → 账号仍 disabled。详见下方 Rollback 方案 A 的状态语义退化说明。
 
 ---
 
 ## 4. 账号恢复步骤
 
-**前提**：新二进制已部署且 v8/v9 迁移完成。
+**前提**：新二进制已部署且 v8/v9 迁移完成。以下操作需 operator 在授权窗口执行，会修改账号状态并产生真实上游请求。
 
 ```bash
 # 1. 确认迁移完成
 ~/.local/bin/hydra status
-# 应显示 2 accounts, 0 active, 2 disabled
+# 应显示 N accounts, 0 active, N disabled（N 为迁移前 disabled 的账号数）
 
-# 2. 手动启用两个账号（backfill 错误地标记为 operator_disabled）
-~/.local/bin/hydra accounts enable 2
-~/.local/bin/hydra accounts enable 3
+# 2. 手动启用被 backfill 标记为 operator_disabled 的账号
+#    operator 需根据实际账号列表逐个 enable
+~/.local/bin/hydra accounts enable <id>
 
 # 3. 等待 health check 周期（120s）或手动刷新 token
-~/.local/bin/hydra accounts refresh 2
-~/.local/bin/hydra accounts refresh 3
+~/.local/bin/hydra accounts refresh <id>
 
 # 4. 验证账号恢复
 ~/.local/bin/hydra status
-# 应显示 2 accounts, 2 active, 0 disabled
+# 应显示 N accounts, N active, 0 disabled
 
-# 5. 验证真实请求
-KEY=$(sqlite3 ~/.config/hydra/hydra.db "SELECT key FROM api_keys WHERE id=4;")
+# 5. 真实上游 smoke（会消耗 quota、产生真实请求日志）
+#    operator 需用合法 API key 发起一次真实请求验证端到端链路
 curl -s -H "Authorization: Bearer $KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"hi"}]}' \
   http://127.0.0.1:18045/v1/chat/completions
 ```
 
-**注意**：步骤 2 只设置 `operator_disabled=0`，不修改 legacy `disabled` 列。如果后续回退到旧二进制，需用旧二进制的 `hydra accounts enable 2/3` 重新设置 `disabled=0`。
+**注意**：
+- 步骤 2 只设置 `operator_disabled=0`，不修改 legacy `disabled` 列。如果后续回退到旧二进制，需用旧二进制的 `hydra accounts enable <id>` 重新设置 `disabled=0`。
+- 步骤 5 是真实上游 smoke，**本次复核未执行**（未在授权窗口）。deployment-complete 要求此步通过。
+- `$KEY` 由 operator 自行提供，本文档不记录任何 key 值。
 
 ---
 
@@ -199,8 +211,7 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/healthz  # 应返�
 
 **回退后必须用旧二进制重新启用账号**：
 ```bash
-~/.local/bin/hydra accounts enable 2   # 旧代码写 disabled=0
-~/.local/bin/hydra accounts enable 3
+~/.local/bin/hydra accounts enable <id>   # 旧代码写 disabled=0
 ```
 
 **不能描述为"安全回退"**：进程可以启动，但用新代码做过的 enable/health-recover 操作在旧代码下不可见，账号可能保持 disabled 状态。
@@ -242,21 +253,24 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/healthz  # 应返�
 
 ## 6. 部署前检查清单
 
-部署新二进制前，需要 master 明确批准以下操作：
+部署新二进制前，需要 master 明确批准以下操作。**顺序不可逆**：停服务 → 备份 DB → 传输二进制 → 重启，跳步或换序会导致备份不一致或 WAL 混用。
 
 - [ ] **构建 Linux 二进制**：
       `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/hydra-linux ./cmd/hydra`
       （纯 Go，无 CGO，静态链接，已在 MacBook 验证交叉编译成功）
 - [ ] **备份旧二进制**：`ssh omarchy 'cp ~/.local/bin/hydra ~/.local/bin/hydra.bak'`
-- [ ] **一致性备份 DB**（必须停服务后备份，确保 WAL 已 checkpoint）：
+- [ ] **一致性备份 DB**（必须先停服务确保 WAL checkpoint，再备份，再重启旧服务维持可用）：
       `ssh omarchy 'systemctl --user stop hydra.service && sqlite3 ~/.config/hydra/hydra.db ".backup ~/.config/hydra/hydra.db.bak" && systemctl --user start hydra.service'`
+      **注意**：此步在部署旧版本仍运行时执行，备份完成后重启旧服务以维持可用性。实际部署时需再次停服务再替换二进制。
 - [ ] **传输新二进制**：`scp /tmp/hydra-linux omarchy:~/.local/bin/hydra`
 - [ ] **重启服务**：`ssh omarchy 'systemctl --user restart hydra.service'`
+      新代码 SIGTERM 行为：`srv.Shutdown` 有 30s HTTP drain 窗口，background loops（token/quota/cleanup/healthCheck）有 45s join 窗口，正常信号返回 exit 0。`systemctl restart` 发 SIGTERM 后等待进程退出，超时后 systemd 可能发 SIGKILL——若 75s 内未退出需检查是否有 stuck in-flight 请求。
 - [ ] **验证迁移**：`ssh omarchy 'sqlite3 ~/.config/hydra/hydra.db "PRAGMA user_version;"'`（应为 9）
 - [ ] **验证权限**：`ssh omarchy 'stat -c %a ~/.config/hydra/hydra.db'`（应为 600）
 - [ ] **验证鉴权**：`ssh omarchy 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/metrics'`（应为 401）
-- [ ] **手动启用账号**：`ssh omarchy '~/.local/bin/hydra accounts enable 2 && ~/.local/bin/hydra accounts enable 3'`
+- [ ] **手动启用账号**：由 operator 在授权窗口根据实际账号列表逐个 `~/.local/bin/hydra accounts enable <id>`
 - [ ] **验证账号恢复**：等待 120s 后 `ssh omarchy '~/.local/bin/hydra status'`
+- [ ] **真实上游 smoke**：由 operator 在授权窗口用合法 API key 发起一次真实请求验证端到端链路（会消耗 quota）
 
 ---
 
@@ -286,18 +300,20 @@ curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/healthz  # 应返�
 
 ---
 
-## 8. 建议 source-stage tag
+## 8. source-stage tag 状态
 
 ```
-v0.5.0-alpha.1
+v0.5.0-alpha.1 (annotated, 已打)
 ```
+
+**tag 指向**：`4d5b63e` (Separate code baseline from tag target in handoff header)
+**tagger**：2026-07-28 21:30:34 +0800
+**代码验收基线**：`db75385` (P2-A.1: CLI contract closure) — tag target 相对基线仅多 3 个文档提交，无代码变更
 
 **理由**：
 - 本地源码验证通过（format/vet/race/build/224 测试），可作为 source-stage 里程碑
-- **不是稳定版本**：部署未验证，旧 DB 迁移有 backfill 语义风险，在线账号全 disabled 未恢复
+- **不是稳定版本**：部署未验证，旧 DB 迁移有 backfill 语义风险，账号可用性与真实上游 smoke 未在授权窗口验证
 - v0.4.x 系列是 pre-P2-A 的已部署版本；P2-A 引入架构变更（application service、typed error/DTO、JSON output、CLI 契约统一）
 - alpha.1 表示源码阶段完成但部署验证未完成，后续部署验证通过后再考虑 v0.5.0
-- 代码验收基线 commit: `db75385401b5f8fb3871dcc9765e259c21d3393c`
-- tag target commit: 本文档修正后的最终 HEAD（含交接文档的 commit）
 
-**未打 tag，等待 master 批准。**
+**tag 不应移动**：已存在的 annotated tag 指向 `4d5b63e`，本次文档校正提交不应导致 tag 重打。移动已存在 tag 会破坏审计链路，需 master 明确批准并强制覆盖。
