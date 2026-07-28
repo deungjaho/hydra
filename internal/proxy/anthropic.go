@@ -173,10 +173,19 @@ func anthropicMessageToContent(msg map[string]any, toolNameMap map[string]string
 				}
 			case "thinking":
 				if t, ok := block["thinking"].(string); ok && strings.TrimSpace(t) != "" {
+					// Pass through the real signature from the client.
+					// For Claude models served natively by Antigravity,
+					// the upstream (Anthropic API) validates signatures,
+					// so we must forward the original. For Gemini models,
+					// "skip_thought_signature_validator" skips validation.
+					sig := "skip_thought_signature_validator"
+					if s, ok := block["signature"].(string); ok && s != "" {
+						sig = s
+					}
 					part := map[string]any{
-						"text":            t,
-						"thought":         true,
-						"thoughtSignature": "skip_thought_signature_validator",
+						"text":             t,
+						"thought":          true,
+						"thoughtSignature": sig,
 					}
 					parts = append(parts, part)
 				}
