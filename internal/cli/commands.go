@@ -503,8 +503,19 @@ func newKeyCmd() *cobra.Command {
 					status = "disabled"
 				}
 				created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
-				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s\n",
-					k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
+				schedInfo := ""
+				if k.SchedulingMode != "" || k.NoSticky {
+					parts := []string{}
+					if k.SchedulingMode != "" {
+						parts = append(parts, "mode="+k.SchedulingMode)
+					}
+					if k.NoSticky {
+						parts = append(parts, "no-sticky")
+					}
+					schedInfo = "[" + strings.Join(parts, ",") + "]"
+				}
+				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s  %s\n",
+					k.ID, k.Label, prefix, status, reqs, tokens, cost, created, schedInfo)
 			}
 			return nil
 		},
@@ -570,8 +581,19 @@ func newKeyCmd() *cobra.Command {
 					status = "disabled"
 				}
 				created := time.Unix(k.CreatedAt, 0).Format("2006-01-02")
-				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s\n",
-					k.ID, k.Label, prefix, status, reqs, tokens, cost, created)
+				schedInfo := ""
+				if k.SchedulingMode != "" || k.NoSticky {
+					parts := []string{}
+					if k.SchedulingMode != "" {
+						parts = append(parts, "mode="+k.SchedulingMode)
+					}
+					if k.NoSticky {
+						parts = append(parts, "no-sticky")
+					}
+					schedInfo = "[" + strings.Join(parts, ",") + "]"
+				}
+				fmt.Printf("%-4d %-14s %-20s %-8s %-8d %-10d $%.4f  %s  %s\n",
+					k.ID, k.Label, prefix, status, reqs, tokens, cost, created, schedInfo)
 			}
 			return nil
 		},
@@ -683,6 +705,65 @@ func newKeyCmd() *cobra.Command {
 			return nil
 		},
 	})
+	// update [id] --scheduling-mode <mode> --no-sticky
+	updateCmd := &cobra.Command{
+		Use:   "update [id]",
+		Short: "Update per-key scheduling override (scheduling-mode, no-sticky)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id, err := parseID(args[0])
+			if err != nil {
+				return err
+			}
+			d, err := db.Open(config.DBPath())
+			if err != nil {
+				return err
+			}
+			defer d.Close()
+
+			schedMode, _ := cmd.Flags().GetString("scheduling-mode")
+			noSticky, _ := cmd.Flags().GetBool("no-sticky")
+			clearSched, _ := cmd.Flags().GetBool("clear-scheduling")
+			clearNoSticky, _ := cmd.Flags().GetBool("clear-no-sticky")
+
+			if clearSched {
+				schedMode = ""
+			}
+			// If --clear-no-sticky is set, we need to write false explicitly.
+			if clearNoSticky {
+				noSticky = false
+			}
+
+			// Validate scheduling mode.
+			switch schedMode {
+			case "", "cache", "balance", "performance":
+			default:
+				return fmt.Errorf("invalid scheduling-mode %q: must be cache, balance, or performance", schedMode)
+			}
+
+			if err := account.UpdateAPIKeyScheduling(d, id, schedMode, noSticky); err != nil {
+				return err
+			}
+
+			k, err := account.GetAPIKey(d, id)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("API key #%d updated:\n", id)
+			if k.SchedulingMode == "" {
+				fmt.Printf("  scheduling-mode: (follow global)\n")
+			} else {
+				fmt.Printf("  scheduling-mode: %s\n", k.SchedulingMode)
+			}
+			fmt.Printf("  no-sticky: %v\n", k.NoSticky)
+			return nil
+		},
+	}
+	updateCmd.Flags().String("scheduling-mode", "", "Override scheduling mode: cache, balance, or performance (empty = follow global)")
+	updateCmd.Flags().Bool("no-sticky", false, "Skip sticky session binding for this key's requests")
+	updateCmd.Flags().Bool("clear-scheduling", false, "Clear per-key scheduling-mode override (revert to global)")
+	updateCmd.Flags().Bool("clear-no-sticky", false, "Clear per-key no-sticky override")
+	cmd.AddCommand(updateCmd)
 	return cmd
 }
 

@@ -124,6 +124,13 @@ func (d *Db) migrate() error {
 			return err
 		}
 	}
+	// v7: per-API-key scheduling override.
+	if err := ensureColumn(d.conn, "api_keys", "scheduling_mode", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(d.conn, "api_keys", "no_sticky", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
 }
 

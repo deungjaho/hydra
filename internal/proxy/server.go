@@ -102,10 +102,15 @@ func isRetryableStatus(code int) bool {
 func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	defer func() { s.State.metrics.observeDuration(time.Since(startTime).Seconds()) }()
-	apiKeyID, ok := s.checkAuth(r)
+	apiKey, ok := s.checkAuthFull(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	var apiKeyID *int64
+	if apiKey != nil {
+		id := apiKey.ID
+		apiKeyID = &id
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20)) // 32MB
@@ -133,8 +138,15 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	}
 
 	sessionID, _ := openaiReq["user"].(string)
+	// Per-key scheduling override: API key can override global scheduling_mode
+	// and no_sticky. Header X-Hydra-No-Sticky still takes precedence.
+	schedMode := s.Config.Scheduling.Mode
+	if apiKey != nil && apiKey.SchedulingMode != "" {
+		schedMode = config.SchedulingMode(apiKey.SchedulingMode)
+	}
 	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
-		r.Header.Get("X-Hydra-No-Sticky") == "1"
+		r.Header.Get("X-Hydra-No-Sticky") == "1" ||
+		(apiKey != nil && apiKey.NoSticky)
 
 	// Failover loop: try accounts until one succeeds or all are exhausted.
 	tried := make(map[int64]bool)
@@ -143,7 +155,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			accounts,
 			s.State.RateLimiter,
 			s.State.Sticky,
-			s.Config.Scheduling.Mode,
+			schedMode,
 			mappedModel,
 			sessionID,
 			s.Config.QuotaProtection.Enabled,
@@ -344,10 +356,15 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	defer func() { s.State.metrics.observeDuration(time.Since(startTime).Seconds()) }()
-	apiKeyID, ok := s.checkAuth(r)
+	apiKey, ok := s.checkAuthFull(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	var apiKeyID *int64
+	if apiKey != nil {
+		id := apiKey.ID
+		apiKeyID = &id
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 32<<20)) // 32MB
@@ -378,8 +395,14 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
 		sessionID, _ = md["user_id"].(string)
 	}
+	// Per-key scheduling override.
+	schedMode := s.Config.Scheduling.Mode
+	if apiKey != nil && apiKey.SchedulingMode != "" {
+		schedMode = config.SchedulingMode(apiKey.SchedulingMode)
+	}
 	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
-		r.Header.Get("X-Hydra-No-Sticky") == "1"
+		r.Header.Get("X-Hydra-No-Sticky") == "1" ||
+		(apiKey != nil && apiKey.NoSticky)
 
 	// Failover loop: try accounts until one succeeds or all are exhausted.
 	tried := make(map[int64]bool)
@@ -388,7 +411,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			accounts,
 			s.State.RateLimiter,
 			s.State.Sticky,
-			s.Config.Scheduling.Mode,
+			schedMode,
 			mappedModel,
 			sessionID,
 			s.Config.QuotaProtection.Enabled,
@@ -578,10 +601,15 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 }
 
 func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.Request) {
-	apiKeyID, ok := s.checkAuth(r)
+	apiKey, ok := s.checkAuthFull(r)
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
+	}
+	var apiKeyID *int64
+	if apiKey != nil {
+		id := apiKey.ID
+		apiKeyID = &id
 	}
 
 	body, err := io.ReadAll(r.Body)
@@ -609,14 +637,20 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
 		sessionID, _ = md["user_id"].(string)
 	}
+	// Per-key scheduling override.
+	schedMode := s.Config.Scheduling.Mode
+	if apiKey != nil && apiKey.SchedulingMode != "" {
+		schedMode = config.SchedulingMode(apiKey.SchedulingMode)
+	}
 	noSticky := r.Header.Get("X-Hydra-No-Sticky") == "true" ||
-		r.Header.Get("X-Hydra-No-Sticky") == "1"
+		r.Header.Get("X-Hydra-No-Sticky") == "1" ||
+		(apiKey != nil && apiKey.NoSticky)
 
 	acc := SelectAccount(
 		accounts,
 		s.State.RateLimiter,
 		s.State.Sticky,
-		s.Config.Scheduling.Mode,
+		schedMode,
 		mappedModel,
 		sessionID,
 		s.Config.QuotaProtection.Enabled,
@@ -732,6 +766,18 @@ func (s *ProxyServer) ensureFreshToken(
 //   - (nil,  true)  — open access (no keys configured yet).
 //   - (nil,  false) — auth failed.
 func (s *ProxyServer) checkAuth(r *http.Request) (*int64, bool) {
+	k, ok := s.checkAuthFull(r)
+	if !ok || k == nil {
+		return nil, ok
+	}
+	id := k.ID
+	return &id, true
+}
+
+// checkAuthFull is like checkAuth but returns the full ApiKey (with scheduling
+// override fields). Used by handleChatCompletions / handleResponses to apply
+// per-key scheduling_mode and no_sticky.
+func (s *ProxyServer) checkAuthFull(r *http.Request) (*account.ApiKey, bool) {
 	var provided string
 	if h := r.Header.Get("Authorization"); h != "" {
 		if rest, ok := strings.CutPrefix(h, "Bearer "); ok {
@@ -758,8 +804,7 @@ func (s *ProxyServer) checkAuth(r *http.Request) (*int64, bool) {
 
 	// Check DB keys only.
 	if k, err := account.FindAPIKey(s.State.DB, provided); err == nil && k != nil {
-		id := k.ID
-		return &id, true
+		return k, true
 	}
 	return nil, false
 }

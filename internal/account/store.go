@@ -432,7 +432,7 @@ func AddAPIKey(d *db.Db, key, label string) (int64, error) {
 func ListAPIKeys(d *db.Db) ([]*ApiKey, error) {
 	var out []*ApiKey
 	err := d.WithConn(func(conn *sql.DB) error {
-		rows, err := conn.Query(`SELECT id, key, label, disabled, created_at FROM api_keys ORDER BY id`)
+		rows, err := conn.Query(`SELECT id, key, label, disabled, created_at, scheduling_mode, no_sticky FROM api_keys ORDER BY id`)
 		if err != nil {
 			return err
 		}
@@ -440,10 +440,12 @@ func ListAPIKeys(d *db.Db) ([]*ApiKey, error) {
 		for rows.Next() {
 			var k ApiKey
 			var disabled int64
-			if err := rows.Scan(&k.ID, &k.Key, &k.Label, &disabled, &k.CreatedAt); err != nil {
+			var noSticky int64
+			if err := rows.Scan(&k.ID, &k.Key, &k.Label, &disabled, &k.CreatedAt, &k.SchedulingMode, &noSticky); err != nil {
 				return err
 			}
 			k.Disabled = disabled != 0
+			k.NoSticky = noSticky != 0
 			out = append(out, &k)
 		}
 		return rows.Err()
@@ -456,18 +458,20 @@ func FindAPIKey(d *db.Db, key string) (*ApiKey, error) {
 	var k *ApiKey
 	err := d.WithConn(func(conn *sql.DB) error {
 		row := conn.QueryRow(
-			`SELECT id, key, label, disabled, created_at FROM api_keys WHERE key = ? AND disabled = 0`,
+			`SELECT id, key, label, disabled, created_at, scheduling_mode, no_sticky FROM api_keys WHERE key = ? AND disabled = 0`,
 			key,
 		)
 		var ak ApiKey
 		var disabled int64
-		if err := row.Scan(&ak.ID, &ak.Key, &ak.Label, &disabled, &ak.CreatedAt); err != nil {
+		var noSticky int64
+		if err := row.Scan(&ak.ID, &ak.Key, &ak.Label, &disabled, &ak.CreatedAt, &ak.SchedulingMode, &noSticky); err != nil {
 			if err == sql.ErrNoRows {
 				return nil
 			}
 			return err
 		}
 		ak.Disabled = disabled != 0
+		ak.NoSticky = noSticky != 0
 		k = &ak
 		return nil
 	})
@@ -502,16 +506,18 @@ func RotateAPIKey(d *db.Db, id int64, newKey string) error {
 func GetAPIKey(d *db.Db, id int64) (*ApiKey, error) {
 	var k ApiKey
 	var disabled int64
+	var noSticky int64
 	err := d.WithConn(func(conn *sql.DB) error {
 		return conn.QueryRow(
-			`SELECT id, key, label, disabled, created_at FROM api_keys WHERE id = ?`,
+			`SELECT id, key, label, disabled, created_at, scheduling_mode, no_sticky FROM api_keys WHERE id = ?`,
 			id,
-		).Scan(&k.ID, &k.Key, &k.Label, &disabled, &k.CreatedAt)
+		).Scan(&k.ID, &k.Key, &k.Label, &disabled, &k.CreatedAt, &k.SchedulingMode, &noSticky)
 	})
 	if err != nil {
 		return nil, err
 	}
 	k.Disabled = disabled != 0
+	k.NoSticky = noSticky != 0
 	return &k, nil
 }
 
@@ -524,6 +530,29 @@ func SetAPIKeyDisabled(d *db.Db, id int64, disabled bool) error {
 		}
 		_, err := conn.Exec(`UPDATE api_keys SET disabled = ? WHERE id = ?`, v, id)
 		return err
+	})
+}
+
+// UpdateAPIKeyScheduling sets per-key scheduling_mode and no_sticky.
+// schedulingMode = "" means follow global config.
+func UpdateAPIKeyScheduling(d *db.Db, id int64, schedulingMode string, noSticky bool) error {
+	return d.WithConn(func(conn *sql.DB) error {
+		ns := 0
+		if noSticky {
+			ns = 1
+		}
+		res, err := conn.Exec(
+			`UPDATE api_keys SET scheduling_mode = ?, no_sticky = ? WHERE id = ?`,
+			schedulingMode, ns, id,
+		)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return fmt.Errorf("API key #%d not found", id)
+		}
+		return nil
 	})
 }
 

@@ -203,11 +203,13 @@ type UsageRow struct {
 
 // ApiKey is one row in api_keys.
 type ApiKey struct {
-	ID        int64
-	Key       string
-	Label     string
-	Disabled  bool
-	CreatedAt int64
+	ID             int64
+	Key            string
+	Label          string
+	Disabled       bool
+	CreatedAt      int64
+	SchedulingMode string // "" = 跟随全局；"cache"/"balance"/"performance" = per-key 覆盖
+	NoSticky       bool   // true = 此 key 的请求跳过 sticky 绑定
 }
 
 // KeyUsage is aggregated usage per API key.
