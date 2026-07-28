@@ -16,7 +16,7 @@ const v1InternalBase = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1inte
 // UserAgent must match the Antigravity desktop app format exactly — the
 // upstream validates client identity via UA + headers. A mismatched UA causes 403.
 const (
-	upstreamUserAgent    = "Antigravity/4.3.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/132.0.6834.160 Electron/39.2.3"
+	upstreamUserAgent     = "Antigravity/4.3.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/132.0.6834.160 Electron/39.2.3"
 	upstreamClientVersion = "4.3.0"
 )
 

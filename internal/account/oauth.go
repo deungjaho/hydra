@@ -34,13 +34,13 @@ const (
 	defaultOAuthClientID     = "OAUTH_CLIENT_ID"
 	defaultOAuthClientSecret = "OAUTH_CLIENT_SECRET"
 
-	oauthAuthURL         = "https://accounts.google.com/o/oauth2/v2/auth"
-	oauthTokenURL        = "https://oauth2.googleapis.com/token"
-	oauthUserInfoURL     = "https://www.googleapis.com/oauth2/v2/userinfo"
-	loadCodeAssistURL    = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist"
-	oauthUserAgent       = "vscode/1.X.X (Antigravity/4.4.7)"
-	oauthRedirectURI     = "http://localhost"
-	oauthRefreshSkew int64 = 900
+	oauthAuthURL            = "https://accounts.google.com/o/oauth2/v2/auth"
+	oauthTokenURL           = "https://oauth2.googleapis.com/token"
+	oauthUserInfoURL        = "https://www.googleapis.com/oauth2/v2/userinfo"
+	loadCodeAssistURL       = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist"
+	oauthUserAgent          = "vscode/1.X.X (Antigravity/4.4.7)"
+	oauthRedirectURI        = "http://localhost"
+	oauthRefreshSkew  int64 = 900
 )
 
 // oauthClientID returns the OAuth client ID, preferring the
@@ -142,7 +142,7 @@ func RunOAuthFlow(client *http.Client) (*AuthResult, error) {
 	projectID, _ := FetchProjectID(client, tokenResp.AccessToken)
 
 	if tokenResp.RefreshToken == "" {
-		return nil, fmt.Errorf("oauth: Google did not return a refresh_token. "+
+		return nil, fmt.Errorf("oauth: Google did not return a refresh_token. " +
 			"Revoke access at https://myaccount.google.com/permissions and try again.")
 	}
 

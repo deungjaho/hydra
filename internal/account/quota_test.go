@@ -15,8 +15,8 @@ func sortedStrings(s []string) []string {
 func TestComputeProtectedModels_AddsBelowThreshold(t *testing.T) {
 	current := []string{}
 	percentages := map[string]int32{
-		"gemini-3-pro":          2,
-		"claude-sonnet-4-6":     50,
+		"gemini-3-pro":      2,
+		"claude-sonnet-4-6": 50,
 	}
 	got := ComputeProtectedModels(current, percentages, nil, 5)
 	// gemini-3-pro (2% < 5%) should be protected
@@ -71,9 +71,9 @@ func TestComputeProtectedModels_KeepsUnprotectedAboveThreshold(t *testing.T) {
 func TestComputeProtectedModels_MonitoredFilter(t *testing.T) {
 	current := []string{}
 	percentages := map[string]int32{
-		"gemini-3-pro":       2,
-		"claude-sonnet-4-6":  2,
-		"claude-opus-4-6":    2,
+		"gemini-3-pro":      2,
+		"claude-sonnet-4-6": 2,
+		"claude-opus-4-6":   2,
 	}
 	monitored := []string{"gemini-3-pro"}
 	got := ComputeProtectedModels(current, percentages, monitored, 5)

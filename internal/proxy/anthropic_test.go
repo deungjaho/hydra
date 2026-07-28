@@ -26,7 +26,7 @@ func TestBuildToolNameMap(t *testing.T) {
 			},
 		},
 		map[string]any{
-			"role": "user",
+			"role":    "user",
 			"content": "hello",
 		},
 	}

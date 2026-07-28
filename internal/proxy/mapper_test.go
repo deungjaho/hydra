@@ -168,33 +168,33 @@ func TestNormalizeSchemaTypes_Nested(t *testing.T) {
 
 func TestNormalizeSchemaTypes_RemovesUnsupportedFields(t *testing.T) {
 	schema := map[string]any{
-		"type":                "object",
-		"strict":              true,
-		"$schema":             "http://json-schema.org/draft-07/schema#",
-		"definitions":         map[string]any{},
-		"exclusiveMinimum":    0,
-		"exclusiveMaximum":    100,
-		"default":             "x",
-		"examples":            []any{},
-		"pattern":             "^[a-z]+$",
-		"multipleOf":          2,
-		"minLength":           1,
-		"maxLength":           100,
-		"minItems":            0,
-		"maxItems":            10,
-		"minProperties":       1,
-		"maxProperties":       10,
-		"uniqueItems":         true,
-		"const":               "x",
-		"enum":                []any{"a", "b"},
-		"title":               "Test",
-		"$ref":                "#/definitions/foo",
+		"type":                 "object",
+		"strict":               true,
+		"$schema":              "http://json-schema.org/draft-07/schema#",
+		"definitions":          map[string]any{},
+		"exclusiveMinimum":     0,
+		"exclusiveMaximum":     100,
+		"default":              "x",
+		"examples":             []any{},
+		"pattern":              "^[a-z]+$",
+		"multipleOf":           2,
+		"minLength":            1,
+		"maxLength":            100,
+		"minItems":             0,
+		"maxItems":             10,
+		"minProperties":        1,
+		"maxProperties":        10,
+		"uniqueItems":          true,
+		"const":                "x",
+		"enum":                 []any{"a", "b"},
+		"title":                "Test",
+		"$ref":                 "#/definitions/foo",
 		"additionalProperties": true,
-		"propertyNames":       map[string]any{},
-		"oneOf":               []any{},
-		"anyOf":               []any{},
-		"allOf":               []any{},
-		"not":                 map[string]any{},
+		"propertyNames":        map[string]any{},
+		"oneOf":                []any{},
+		"anyOf":                []any{},
+		"allOf":                []any{},
+		"not":                  map[string]any{},
 	}
 	normalizeSchemaTypes(schema)
 	for _, k := range []string{
@@ -254,7 +254,7 @@ func TestBuildOpenAIToolNameMap(t *testing.T) {
 			},
 		},
 		map[string]any{
-			"role": "user",
+			"role":    "user",
 			"content": "hello",
 		},
 	}
@@ -370,10 +370,10 @@ func TestNormalizeSchemaTypesAnthropic_Nested(t *testing.T) {
 
 func TestNormalizeSchemaTypesAnthropic_RemovesUnsupportedFields(t *testing.T) {
 	schema := map[string]any{
-		"type":        "object",
-		"enum":        []any{"a", "b"},
+		"type":                 "object",
+		"enum":                 []any{"a", "b"},
 		"additionalProperties": true,
-		"oneOf":       []any{},
+		"oneOf":                []any{},
 	}
 	normalizeSchemaTypesAnthropic(schema)
 	for _, k := range []string{"enum", "additionalProperties", "oneOf"} {
@@ -758,4 +758,3 @@ func TestMaxOutputTokensCap(t *testing.T) {
 		}
 	}
 }
-

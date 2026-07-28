@@ -262,7 +262,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 				ClientIP: clientIP,
 				HasError: true, Error: err.Error(),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			http.Error(w, "upstream request failed",
 				http.StatusBadGateway)
@@ -280,11 +280,11 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			if sessionID != "" {
 				s.State.Sticky.Unbind(sessionID)
@@ -306,11 +306,11 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(bodyText)
@@ -324,11 +324,11 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(bodyText)
@@ -379,11 +379,11 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			HasCompletion: true, CompletionTokens: completionTokens,
 			HasCached: true, CachedTokens: cachedTokens,
 			HasThought: true, ThoughtTokens: thoughtTokens,
-			Status: 200,
+			Status:      200,
 			HasClientIP: clientIP != "", ClientIP: clientIP,
 			HasCost: true, CostUSD: cost,
 			HasAPIKeyID: apiKeyID != nil,
-			APIKeyID:   derefInt64(apiKeyID),
+			APIKeyID:    derefInt64(apiKeyID),
 		})
 		writeJSON(w, http.StatusOK, openaiResp)
 		return
@@ -516,7 +516,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 				ClientIP: clientIP,
 				HasError: true, Error: err.Error(),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			http.Error(w, "upstream request failed",
 				http.StatusBadGateway)
@@ -534,11 +534,11 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			if sessionID != "" {
 				s.State.Sticky.Unbind(sessionID)
@@ -560,11 +560,11 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(bodyText)
@@ -578,11 +578,11 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			_ = account.LogRequest(s.State.DB, account.LogRequestParams{
 				HasAccountID: true, AccountID: acc.ID,
 				HasModel: true, Model: originalModel,
-				Status: int64(resp.StatusCode),
+				Status:      int64(resp.StatusCode),
 				HasClientIP: clientIP != "", ClientIP: clientIP,
 				HasError: true, Error: string(bodyText),
 				HasAPIKeyID: apiKeyID != nil,
-				APIKeyID:   derefInt64(apiKeyID),
+				APIKeyID:    derefInt64(apiKeyID),
 			})
 			w.WriteHeader(resp.StatusCode)
 			_, _ = w.Write(bodyText)
@@ -630,11 +630,11 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 			HasPromptTokens: true, PromptTokens: promptTokens,
 			HasCompletion: true, CompletionTokens: completionTokens,
 			HasCached: true, CachedTokens: cachedTokens,
-			Status: 200,
+			Status:      200,
 			HasClientIP: clientIP != "", ClientIP: clientIP,
 			HasCost: true, CostUSD: cost,
 			HasAPIKeyID: apiKeyID != nil,
-			APIKeyID:   derefInt64(apiKeyID),
+			APIKeyID:    derefInt64(apiKeyID),
 		})
 		writeJSON(w, http.StatusOK, anthropicResp)
 		return
@@ -745,7 +745,7 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 		HasAccountID: true, AccountID: acc.ID,
 		HasModel: true, Model: originalModel,
 		HasPromptTokens: true, PromptTokens: promptTokens,
-		Status: 200,
+		Status:      200,
 		HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"input_tokens": promptTokens})
@@ -973,7 +973,7 @@ func (s *ProxyServer) streamOpenAISSE(
 		HasCompletion: true, CompletionTokens: totalCompletion,
 		HasCached: true, CachedTokens: totalCached,
 		HasThought: true, ThoughtTokens: totalThought,
-		Status: 200,
+		Status:  200,
 		HasCost: true, CostUSD: cost,
 		HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
 	})
@@ -1135,7 +1135,7 @@ func (s *ProxyServer) streamAnthropicSSE(
 			HasPromptTokens: true, PromptTokens: totalPrompt,
 			HasCompletion: true, CompletionTokens: totalCompletion,
 			HasCached: true, CachedTokens: totalCached,
-			Status: 200,
+			Status:      200,
 			HasClientIP: clientIP != "", ClientIP: clientIP,
 			HasCost: true, CostUSD: cost,
 			HasAPIKeyID: apiKeyID != nil, APIKeyID: derefInt64(apiKeyID),
@@ -1277,7 +1277,7 @@ func RefreshAllQuotas(s *ProxyServer) error {
 			log.Printf("persist quota failed for %s: %v", acc.Email, err)
 			continue
 		}
-	log.Printf("refreshed quota for %s (max=%d%%, protected=%v)", acc.Email, fetched.MaxPercentage, newProtected)
+		log.Printf("refreshed quota for %s (max=%d%%, protected=%v)", acc.Email, fetched.MaxPercentage, newProtected)
 	}
 	return nil
 }

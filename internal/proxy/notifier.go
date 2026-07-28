@@ -31,7 +31,7 @@ type AccountHealth struct {
 
 // LogNotifier is the default no-op notifier that logs to stderr.
 type LogNotifier struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	unhealthy map[string]bool // tracks state to avoid duplicate notifications
 }
 

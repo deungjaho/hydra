@@ -42,9 +42,9 @@ type SchedulingConfig struct {
 type SchedulingMode string
 
 const (
-	SchedulingCache        SchedulingMode = "cache"
-	SchedulingBalance      SchedulingMode = "balance"
-	SchedulingPerformance  SchedulingMode = "performance"
+	SchedulingCache       SchedulingMode = "cache"
+	SchedulingBalance     SchedulingMode = "balance"
+	SchedulingPerformance SchedulingMode = "performance"
 )
 
 type QuotaProtectionConfig struct {
@@ -60,10 +60,10 @@ type QuotaProtectionConfig struct {
 // interface. After consecutive_failures_threshold consecutive
 // failures, the account is auto-disabled.
 type HealthCheckConfig struct {
-	Enabled              bool   `toml:"enabled"`
-	IntervalSeconds      int    `toml:"interval_seconds"`
-	TimeoutSeconds       int    `toml:"timeout_seconds"`
-	FailureThreshold     int    `toml:"failure_threshold"`
+	Enabled          bool `toml:"enabled"`
+	IntervalSeconds  int  `toml:"interval_seconds"`
+	TimeoutSeconds   int  `toml:"timeout_seconds"`
+	FailureThreshold int  `toml:"failure_threshold"`
 	// NotifyWebhook is reserved for future webhook notifications.
 	// When non-empty, health events are POSTed as JSON to this URL.
 	NotifyWebhook string `toml:"notify_webhook"`

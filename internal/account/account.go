@@ -26,7 +26,7 @@ type Account struct {
 	QuotaSummary    string // empty if NULL
 	HasQuotaSummary bool
 	ProtectedModels []string
-	LastUsedAt      int64  // 0 if NULL
+	LastUsedAt      int64 // 0 if NULL
 	HasLastUsed     bool
 	LastError       string // empty if NULL
 	HasLastError    bool
@@ -37,9 +37,9 @@ type Account struct {
 
 // QuotaModel is one entry parsed from quota_json.
 type QuotaModel struct {
-	Name      string `json:"name"`
-	Percentage int32 `json:"percentage"`
-	ResetTime string `json:"reset_time"`
+	Name       string `json:"name"`
+	Percentage int32  `json:"percentage"`
+	ResetTime  string `json:"reset_time"`
 }
 
 // QuotaModelList parses quota_json into QuotaModel entries.

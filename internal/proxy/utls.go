@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http2"
 	utls "github.com/refraction-networking/utls"
+	"golang.org/x/net/http2"
 )
 
 // NewUTLSClient returns an *http.Client whose Transport emulates Chrome 120
@@ -174,7 +174,7 @@ func dialUpstream(ctx context.Context, addr, proxyURL string) (net.Conn, error) 
 }
 
 type bufferedConn struct {
-	r  *bufio.Reader
+	r *bufio.Reader
 	net.Conn
 }
 

@@ -12,15 +12,16 @@ import (
 // handleMetrics exposes Prometheus-format metrics at /metrics.
 //
 // Metrics:
-//   hydra_requests_total{key,label,model,status}      counter
-//   hydra_prompt_tokens_total{key,label,model}        counter
-//   hydra_completion_tokens_total{key,label,model}    counter
-//   hydra_cost_usd_total{key,label,model}             counter
-//   hydra_request_duration_seconds{model}             histogram (buckets)
-//   hydra_account_quota_remaining{account,model}      gauge (0-100)
-//   hydra_accounts_total{status}                      gauge
-//   hydra_api_keys_total{status}                      gauge
-//   hydra_uptime_seconds                              gauge
+//
+//	hydra_requests_24h{key,label,model,status}        gauge (24h sliding window)
+//	hydra_prompt_tokens_24h{key,label,model}          gauge
+//	hydra_completion_tokens_24h{key,label,model}      gauge
+//	hydra_cost_usd_24h{key,label,model}               gauge
+//	hydra_request_duration_seconds{model}             histogram (cumulative since start)
+//	hydra_account_quota_remaining{account,model}      gauge (0-100)
+//	hydra_accounts_total{status}                      gauge
+//	hydra_api_keys_total{status}                      gauge
+//	hydra_uptime_seconds                              gauge
 func (s *ProxyServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.checkAuth(r); !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -64,32 +65,34 @@ func (s *ProxyServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	b.WriteString(fmt.Sprintf("hydra_api_keys_total{status=\"active\"} %d\n", keyActive))
 	b.WriteString(fmt.Sprintf("hydra_api_keys_total{status=\"disabled\"} %d\n", keyDisabled))
 
-	// --- Per-key/model usage (last 24h) ---
+	// --- Per-key/model usage (last 24h, sliding window) ---
+	// These are gauges, not counters — the 24h window means values
+	// can decrease as old requests fall out of the window.
 	since := time.Now().Unix() - 86400
 	usage, _ := account.UsageByKeyModel(s.State.DB, since)
-	b.WriteString("\n# HELP hydra_requests_total Total requests by key/model/status.\n")
-	b.WriteString("# TYPE hydra_requests_total counter\n")
+	b.WriteString("\n# HELP hydra_requests_24h Requests in the last 24h by key/model/status.\n")
+	b.WriteString("# TYPE hydra_requests_24h gauge\n")
 	for _, u := range usage {
 		lbl := promLabel("key", u.KeyPrefix, "label", u.Label, "model", u.Model, "status", "200")
-		b.WriteString(fmt.Sprintf("hydra_requests_total{%s} %d\n", lbl, u.Requests))
+		b.WriteString(fmt.Sprintf("hydra_requests_24h{%s} %d\n", lbl, u.Requests))
 	}
-	b.WriteString("\n# HELP hydra_prompt_tokens_total Prompt tokens by key/model.\n")
-	b.WriteString("# TYPE hydra_prompt_tokens_total counter\n")
+	b.WriteString("\n# HELP hydra_prompt_tokens_24h Prompt tokens in the last 24h by key/model.\n")
+	b.WriteString("# TYPE hydra_prompt_tokens_24h gauge\n")
 	for _, u := range usage {
 		lbl := promLabel("key", u.KeyPrefix, "label", u.Label, "model", u.Model)
-		b.WriteString(fmt.Sprintf("hydra_prompt_tokens_total{%s} %d\n", lbl, u.PromptTokens))
+		b.WriteString(fmt.Sprintf("hydra_prompt_tokens_24h{%s} %d\n", lbl, u.PromptTokens))
 	}
-	b.WriteString("\n# HELP hydra_completion_tokens_total Completion tokens by key/model.\n")
-	b.WriteString("# TYPE hydra_completion_tokens_total counter\n")
+	b.WriteString("\n# HELP hydra_completion_tokens_24h Completion tokens in the last 24h by key/model.\n")
+	b.WriteString("# TYPE hydra_completion_tokens_24h gauge\n")
 	for _, u := range usage {
 		lbl := promLabel("key", u.KeyPrefix, "label", u.Label, "model", u.Model)
-		b.WriteString(fmt.Sprintf("hydra_completion_tokens_total{%s} %d\n", lbl, u.CompletionTokens))
+		b.WriteString(fmt.Sprintf("hydra_completion_tokens_24h{%s} %d\n", lbl, u.CompletionTokens))
 	}
-	b.WriteString("\n# HELP hydra_cost_usd_total Estimated cost in USD by key/model.\n")
-	b.WriteString("# TYPE hydra_cost_usd_total counter\n")
+	b.WriteString("\n# HELP hydra_cost_usd_24h Estimated cost in USD in the last 24h by key/model.\n")
+	b.WriteString("# TYPE hydra_cost_usd_24h gauge\n")
 	for _, u := range usage {
 		lbl := promLabel("key", u.KeyPrefix, "label", u.Label, "model", u.Model)
-		b.WriteString(fmt.Sprintf("hydra_cost_usd_total{%s} %.6f\n", lbl, u.CostUSD))
+		b.WriteString(fmt.Sprintf("hydra_cost_usd_24h{%s} %.6f\n", lbl, u.CostUSD))
 	}
 
 	// --- Per-account/model quota ---

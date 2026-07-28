@@ -298,11 +298,11 @@ type ProxyState struct {
 
 // metricsCollector tracks in-memory request metrics for Prometheus.
 type metricsCollector struct {
-	mu       sync.Mutex
-	buckets  []float64 // histogram bucket upper bounds
-	counts   []uint64  // count per bucket
-	sum      float64
-	total    uint64
+	mu      sync.Mutex
+	buckets []float64 // histogram bucket upper bounds
+	counts  []uint64  // count per bucket
+	sum     float64
+	total   uint64
 }
 
 func newMetricsCollector() metricsCollector {

@@ -37,15 +37,15 @@ var (
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
 			Background(lipgloss.Color("236"))
-	grayStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	greenStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	yellowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	redStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
-	magentaStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
-	blueStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
-	boldStyle    = lipgloss.NewStyle().Bold(true)
-	helpStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	helpKeyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
+	grayStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	greenStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
+	yellowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
+	redStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Bold(true)
+	magentaStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+	blueStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("4"))
+	boldStyle      = lipgloss.NewStyle().Bold(true)
+	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	helpKeyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
 	statusBarStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("252"))
@@ -140,7 +140,7 @@ type tickMsg struct{}
 type inputMode int
 
 const (
-	inputNone  inputMode = iota
+	inputNone   inputMode = iota
 	inputAddKey           // typing label for new key
 )
 
@@ -602,19 +602,19 @@ func (m *tuiModel) moveCursor(delta int) {
 			return
 		}
 		n := len(m.accounts)
-		m.cursor = ((m.cursor + delta) % n + n) % n
+		m.cursor = ((m.cursor+delta)%n + n) % n
 	case tabKeys:
 		if len(m.keys) == 0 {
 			return
 		}
 		n := len(m.keys)
-		m.cursor = ((m.cursor + delta) % n + n) % n
+		m.cursor = ((m.cursor+delta)%n + n) % n
 	case tabModels:
 		if len(m.models) == 0 {
 			return
 		}
 		n := len(m.models)
-		m.modelsCur = ((m.modelsCur + delta) % n + n) % n
+		m.modelsCur = ((m.modelsCur+delta)%n + n) % n
 	case tabLogs:
 		if delta > 0 {
 			m.logScroll += delta
@@ -1404,7 +1404,7 @@ func (m tuiModel) keyHints() string {
 func (m tuiModel) renderFooter() string {
 	hints := m.keyHints()
 	if m.statusMsg != "" {
-		return statusBarStyle.Render(" " + m.statusMsg) + "\n" + helpStyle.Render(" " + hints)
+		return statusBarStyle.Render(" "+m.statusMsg) + "\n" + helpStyle.Render(" "+hints)
 	}
 	return helpStyle.Render(" " + hints)
 }

@@ -69,9 +69,9 @@ func AddAccount(d *db.Db, email, accessToken, refreshToken, projectID string, ex
 			id = existingID
 			if projectID == "" {
 				_, err := conn.Exec(
-				`UPDATE accounts SET access_token = ?, refresh_token = ?, `+
-					`expires_at = ?, last_error = NULL, `+
-					`disabled = 0 WHERE id = ?`,
+					`UPDATE accounts SET access_token = ?, refresh_token = ?, `+
+						`expires_at = ?, last_error = NULL, `+
+						`disabled = 0 WHERE id = ?`,
 					accessToken, refreshToken, expiresAt, existingID,
 				)
 				return err

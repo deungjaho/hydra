@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/deungjaho/hydra/internal/account"
+	"github.com/google/uuid"
 )
 
 // SupportedModels is the canonical list orbit advertises via /v1/models.
@@ -37,6 +37,7 @@ var SupportedModels = []string{
 //  1. Exact alias lookup (handles deprecated/legacy names → current model).
 //  2. gemini-* / claude-* passthrough (supports unreleased model IDs).
 //  3. Unknown → passthrough as-is (lets the upstream reject if invalid).
+//
 // maxOutputTokensCap returns the maximum output tokens the upstream
 // streaming endpoint accepts for a given model. The non-streaming
 // endpoint silently caps values above this limit, but the streaming
@@ -306,7 +307,7 @@ func openAIMessageToContent(msg map[string]any, toolNameMap map[string]string) m
 				args = map[string]any{}
 			}
 			parts = append(parts, map[string]any{
-				"functionCall":    map[string]any{"name": name, "args": args, "id": id},
+				"functionCall":     map[string]any{"name": name, "args": args, "id": id},
 				"thoughtSignature": "skip_thought_signature_validator",
 			})
 		}

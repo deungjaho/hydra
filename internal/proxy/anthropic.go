@@ -218,7 +218,7 @@ func anthropicMessageToContent(msg map[string]any, toolNameMap map[string]string
 					sig = s
 				}
 				parts = append(parts, map[string]any{
-					"functionCall":    map[string]any{"name": name, "args": input, "id": id},
+					"functionCall":     map[string]any{"name": name, "args": input, "id": id},
 					"thoughtSignature": sig,
 				})
 			case "tool_result":
