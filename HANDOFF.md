@@ -1,7 +1,8 @@
 # Hydra 阶段交接文档
 
-**最后更新**: 2026-07-28 21:45
-**HEAD**: `db75385` P2-A.1: CLI contract closure
+**最后更新**: 2026-07-28 21:50
+**代码验收基线**: `db75385` P2-A.1: CLI contract closure
+**tag target**: 本文档修正后的最终 HEAD（含交接文档）
 **建议 source-stage tag**: `v0.5.0-alpha.1` (未打)
 
 ---
@@ -296,6 +297,7 @@ v0.5.0-alpha.1
 - **不是稳定版本**：部署未验证，旧 DB 迁移有 backfill 语义风险，在线账号全 disabled 未恢复
 - v0.4.x 系列是 pre-P2-A 的已部署版本；P2-A 引入架构变更（application service、typed error/DTO、JSON output、CLI 契约统一）
 - alpha.1 表示源码阶段完成但部署验证未完成，后续部署验证通过后再考虑 v0.5.0
-- commit: `db75385401b5f8fb3871dcc9765e259c21d3393c`
+- 代码验收基线 commit: `db75385401b5f8fb3871dcc9765e259c21d3393c`
+- tag target commit: 本文档修正后的最终 HEAD（含交接文档的 commit）
 
 **未打 tag，等待 master 批准。**
