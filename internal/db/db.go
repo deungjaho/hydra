@@ -134,6 +134,10 @@ func (d *Db) migrate() error {
 	if err := ensureColumn(d.conn, "api_keys", "no_sticky", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	// v8: distinguish health-check auto-disable from manual disable.
+	if err := ensureColumn(d.conn, "accounts", "health_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
 }
 

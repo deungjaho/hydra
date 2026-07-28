@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,29 +25,40 @@ type ProxyServer struct {
 	State  *ProxyState
 	HTTP   *http.Client // uTLS client for Gemini upstream
 	OAuth  *http.Client // standard client for OAuth/quota (no uTLS)
+	Probe  *http.Client // short-timeout client for health check probes
 }
 
 // NewProxyServer builds a ProxyServer with a uTLS-backed upstream client
 // and a standard HTTP client for OAuth token refresh / quota fetch.
 func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
+	probeTimeout := time.Duration(cfg.HealthCheck.TimeoutSeconds) * time.Second
+	if probeTimeout < 5*time.Second {
+		probeTimeout = 15 * time.Second
+	}
 	return &ProxyServer{
 		Config: cfg,
 		State:  state,
 		HTTP:   NewUTLSClient(300*time.Second, cfg.Proxy.UpstreamProxy),
 		OAuth:  NewHTTPClient(60*time.Second, cfg.Proxy.UpstreamProxy),
+		Probe:  NewHTTPClient(probeTimeout, cfg.Proxy.UpstreamProxy),
 	}
 }
 
-// Serve starts the HTTP listener and blocks until the server stops.
-func (s *ProxyServer) Serve() error {
+// Serve starts the HTTP listener and blocks until ctx is cancelled or
+// the server fails to start. On ctx cancellation, in-flight requests
+// are allowed to finish (up to WriteTimeout) before returning.
+func (s *ProxyServer) Serve(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", s.Config.Proxy.Bind, s.Config.Proxy.Port)
 
 	// Background loops: token refresher (1-min) + quota refresher (5-min)
-	// + health check (configurable interval, default 2-min).
-	go s.tokenRefresherLoop()
-	go s.quotaRefresherLoop()
+	// + health check (configurable interval, default 2-min)
+	// + cleanup (5-min, evicts expired cooldowns and stale sticky bindings).
+	// All loops exit on ctx.Done().
+	go s.tokenRefresherLoop(ctx)
+	go s.quotaRefresherLoop(ctx)
+	go s.cleanupLoop(ctx)
 	if s.Config.HealthCheck.Enabled {
-		go s.healthCheckLoop()
+		go s.healthCheckLoop(ctx)
 	}
 
 	mux := http.NewServeMux()
@@ -65,8 +77,28 @@ func (s *ProxyServer) Serve() error {
 		WriteTimeout:      600 * time.Second, // long for streaming
 		MaxHeaderBytes:    1 << 20,           // 1MB headers
 	}
-	log.Printf("hydra proxy listening on http://%s", addr)
-	return srv.ListenAndServe()
+
+	// Start listening in a goroutine so we can select on ctx.
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("hydra proxy listening on http://%s", addr)
+		errCh <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		log.Printf("hydra proxy shutting down (graceful)...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("hydra proxy shutdown error: %v", err)
+			return err
+		}
+		log.Printf("hydra proxy stopped")
+		return ctx.Err()
+	}
 }
 
 func (s *ProxyServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -1122,25 +1154,35 @@ func setSSEHeaders(w http.ResponseWriter) {
 // Background quota refresher
 // ---------------------------------------------------------------------------
 
-func (s *ProxyServer) quotaRefresherLoop() {
+func (s *ProxyServer) quotaRefresherLoop(ctx context.Context) {
 	// Run once on boot, then every 5 minutes.
 	RefreshAllQuotas(s)
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		if err := RefreshAllQuotas(s); err != nil {
-			log.Printf("background quota refresh failed: %v", err)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := RefreshAllQuotas(s); err != nil {
+				log.Printf("background quota refresh failed: %v", err)
+			}
 		}
 	}
 }
 
 // tokenRefresherLoop proactively refreshes access tokens that are within
 // oauthRefreshSkew (15 min) of expiry, so requests don't hit a stale token.
-func (s *ProxyServer) tokenRefresherLoop() {
+func (s *ProxyServer) tokenRefresherLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.refreshExpiringTokens()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshExpiringTokens()
+		}
 	}
 }
 
@@ -1164,6 +1206,22 @@ func (s *ProxyServer) refreshExpiringTokens() {
 		}
 		log.Printf("proactively refreshed token for %s (expires in %dm)",
 			acc.Email, (expiresAt-time.Now().Unix())/60)
+	}
+}
+
+// cleanupLoop periodically evicts expired cooldown entries and stale
+// sticky session bindings to prevent unbounded in-memory map growth.
+func (s *ProxyServer) cleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.State.RateLimiter.Cleanup()
+			s.State.Sticky.Cleanup(30 * time.Minute)
+		}
 	}
 }
 
@@ -1241,7 +1299,7 @@ func RefreshAllQuotas(s *ProxyServer) error {
 // On success:
 //   - resets the failure counter
 //   - if the account was previously unhealthy, fires a recovery notification
-func (s *ProxyServer) healthCheckLoop() {
+func (s *ProxyServer) healthCheckLoop(ctx context.Context) {
 	interval := time.Duration(s.Config.HealthCheck.IntervalSeconds) * time.Second
 	if interval < 10*time.Second {
 		interval = 10 * time.Second
@@ -1256,8 +1314,13 @@ func (s *ProxyServer) healthCheckLoop() {
 
 	// Run once immediately at startup, then on every tick.
 	s.runHealthCheck(threshold)
-	for range ticker.C {
-		s.runHealthCheck(threshold)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.runHealthCheck(threshold)
+		}
 	}
 }
 
@@ -1270,7 +1333,9 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 
 	var allDown []AccountHealth
 	for _, acc := range accounts {
-		if acc.Disabled {
+		// Skip manually disabled accounts (disabled && !health_disabled).
+		// Probe health-disabled accounts so they can auto-recover.
+		if acc.Disabled && !acc.HealthDisabled {
 			continue
 		}
 		healthy, reason := s.probeAccount(acc)
@@ -1283,7 +1348,14 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 
 		if healthy {
 			s.State.healthFailures.Delete(acc.ID)
-			// Check if it was previously unhealthy (notifier tracks state).
+			// If the account was health-disabled, auto-recover it.
+			if acc.HealthDisabled {
+				if err := account.MarkHealthRecovered(s.State.DB, acc.ID); err != nil {
+					log.Printf("health check: recover %s failed: %v", acc.Email, err)
+				} else {
+					log.Printf("health check: %s RECOVERED (auto-re-enabled)", acc.Email)
+				}
+			}
 			s.State.Notifier.NotifyAccountRecovered(acc.Email)
 			log.Printf("health check: %s OK", acc.Email)
 			continue
@@ -1293,11 +1365,11 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 		count := s.incrementHealthFailure(acc.ID)
 		s.State.Notifier.NotifyAccountUnhealthy(acc.Email, reason)
 
-		if count >= threshold {
+		if count >= threshold && !acc.HealthDisabled {
 			log.Printf("health check: %s failed %d times, auto-disabling",
 				acc.Email, count)
-			_ = account.MarkError(s.State.DB, acc.ID,
-				"health check: "+reason, true)
+			_ = account.MarkHealthDisabled(s.State.DB, acc.ID,
+				"health check: "+reason)
 			s.State.healthFailures.Delete(acc.ID)
 			s.State.RateLimiter.Clear(acc.ID)
 		}
@@ -1312,10 +1384,12 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 
 // probeAccount does the actual connectivity test. It first ensures
 // the token is fresh, then calls ProbeAccount (fetchAvailableModels).
+// Uses the short-timeout Probe client so a stuck account doesn't block
+// the health check goroutine for 60 seconds.
 func (s *ProxyServer) probeAccount(acc *account.Account) (bool, string) {
 	accessToken := acc.AccessToken
 	if account.NeedsRefresh(acc.ExpiresAt) {
-		tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
+		tok, expiresAt, err := account.RefreshToken(s.Probe, acc.RefreshToken)
 		if err != nil {
 			return false, fmt.Sprintf("token refresh: %v", err)
 		}
@@ -1325,7 +1399,7 @@ func (s *ProxyServer) probeAccount(acc *account.Account) (bool, string) {
 		accessToken = tok
 	}
 
-	if err := account.ProbeAccount(s.OAuth, accessToken, acc.ProjectID); err != nil {
+	if err := account.ProbeAccount(s.Probe, accessToken, acc.ProjectID); err != nil {
 		return false, err.Error()
 	}
 	return true, ""

@@ -30,7 +30,12 @@ func (r *RateLimitTracker) IsLimited(accountID int64, model string) bool {
 	if !ok {
 		return false
 	}
-	return time.Now().Before(t)
+	if time.Now().Before(t) {
+		return true
+	}
+	// Expired — delete to prevent unbounded growth.
+	delete(r.cooldowns, r.key(accountID, model))
+	return false
 }
 
 func (r *RateLimitTracker) SetCooldown(accountID int64, model string, secs int) {
@@ -51,6 +56,19 @@ func (r *RateLimitTracker) Clear(accountID int64) {
 	}
 }
 
+// Cleanup removes all expired cooldown entries. Called periodically
+// to prevent unbounded map growth from one-off model cooldowns.
+func (r *RateLimitTracker) Cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	for k, t := range r.cooldowns {
+		if !now.Before(t) {
+			delete(r.cooldowns, k)
+		}
+	}
+}
+
 func (r *RateLimitTracker) key(accountID int64, model string) string {
 	if model == "" {
 		return itoaInt64(accountID)
@@ -59,19 +77,27 @@ func (r *RateLimitTracker) key(accountID int64, model string) string {
 }
 
 // StickySessions maps session id → account id.
+// Tracks last access time so stale bindings can be evicted.
 type StickySessions struct {
-	mu       sync.Mutex
-	bindings map[string]int64
+	mu         sync.Mutex
+	bindings   map[string]int64
+	lastAccess map[string]time.Time
 }
 
 func NewStickySessions() *StickySessions {
-	return &StickySessions{bindings: make(map[string]int64)}
+	return &StickySessions{
+		bindings:   make(map[string]int64),
+		lastAccess: make(map[string]time.Time),
+	}
 }
 
 func (s *StickySessions) Get(sessionID string) (int64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.bindings[sessionID]
+	if ok {
+		s.lastAccess[sessionID] = time.Now()
+	}
 	return id, ok
 }
 
@@ -79,12 +105,28 @@ func (s *StickySessions) Bind(sessionID string, accountID int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bindings[sessionID] = accountID
+	s.lastAccess[sessionID] = time.Now()
 }
 
 func (s *StickySessions) Unbind(sessionID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.bindings, sessionID)
+	delete(s.lastAccess, sessionID)
+}
+
+// Cleanup removes bindings not accessed within maxIdle. Called
+// periodically to prevent unbounded growth from ended sessions.
+func (s *StickySessions) Cleanup(maxIdle time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-maxIdle)
+	for sid, t := range s.lastAccess {
+		if t.Before(cutoff) {
+			delete(s.bindings, sid)
+			delete(s.lastAccess, sid)
+		}
+	}
 }
 
 // SelectAccount picks the best available account for a request.

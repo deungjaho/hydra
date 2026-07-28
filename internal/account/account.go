@@ -31,6 +31,7 @@ type Account struct {
 	LastError       string // empty if NULL
 	HasLastError    bool
 	Disabled        bool
+	HealthDisabled  bool // true = disabled by health check (auto-recoverable); false = disabled by user or active
 	CreatedAt       int64
 }
 

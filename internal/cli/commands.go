@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -77,7 +80,10 @@ func newServeCmd() *cobra.Command {
 			}
 			state := proxy.NewProxyState(d)
 			srv := proxy.NewProxyServer(cfg, state)
-			return srv.Serve()
+			ctx, stop := signal.NotifyContext(context.Background(),
+				os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return srv.Serve(ctx)
 		},
 	}
 	cmd.Flags().IntVarP(&port, "port", "p", 0, "Override the listen port")

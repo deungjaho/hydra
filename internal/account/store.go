@@ -11,7 +11,7 @@ import (
 
 const accountColumns = `id, email, access_token, refresh_token, project_id, expires_at,
                     quota_remaining, quota_fetched_at, quota_json, quota_summary, protected_models,
-                    last_used_at, last_error, disabled, created_at`
+                    last_used_at, last_error, disabled, health_disabled, created_at`
 
 func scanAccount(row interface {
 	Scan(dest ...any) error
@@ -26,10 +26,11 @@ func scanAccount(row interface {
 	var lastUsedAt sql.NullInt64
 	var lastError sql.NullString
 	var disabled int64
+	var healthDisabled int64
 	err := row.Scan(
 		&a.ID, &a.Email, &a.AccessToken, &a.RefreshToken, &projectID, &a.ExpiresAt,
 		&quotaRemaining, &quotaFetchedAt, &quotaJSON, &quotaSummary, &protectedRaw,
-		&lastUsedAt, &lastError, &disabled, &a.CreatedAt,
+		&lastUsedAt, &lastError, &disabled, &healthDisabled, &a.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -51,6 +52,7 @@ func scanAccount(row interface {
 	a.HasLastError = lastError.Valid
 	a.LastError = lastError.String
 	a.Disabled = disabled != 0
+	a.HealthDisabled = healthDisabled != 0
 	return &a, nil
 }
 
@@ -235,7 +237,9 @@ func RemoveAccount(d *db.Db, id int64) error {
 	})
 }
 
-// SetAccountDisabled toggles the disabled flag.
+// SetAccountDisabled toggles the disabled flag (manual user action).
+// Does not touch health_disabled — a manually disabled account stays
+// disabled regardless of health check results.
 func SetAccountDisabled(d *db.Db, id int64, disabled bool) error {
 	return d.WithConn(func(conn *sql.DB) error {
 		v := 0
@@ -243,6 +247,32 @@ func SetAccountDisabled(d *db.Db, id int64, disabled bool) error {
 			v = 1
 		}
 		_, err := conn.Exec(`UPDATE accounts SET disabled = ? WHERE id = ?`, v, id)
+		return err
+	})
+}
+
+// MarkHealthDisabled sets disabled=1 AND health_disabled=1. Used by the
+// health checker when an account exceeds the failure threshold. The
+// account remains probeable so it can auto-recover.
+func MarkHealthDisabled(d *db.Db, id int64, reason string) error {
+	return d.WithConn(func(conn *sql.DB) error {
+		_, err := conn.Exec(
+			`UPDATE accounts SET last_error = ?, disabled = 1, health_disabled = 1 WHERE id = ?`,
+			reason, id,
+		)
+		return err
+	})
+}
+
+// MarkHealthRecovered clears disabled, health_disabled and last_error.
+// Used by the health checker when a previously health-disabled account
+// passes its probe again.
+func MarkHealthRecovered(d *db.Db, id int64) error {
+	return d.WithConn(func(conn *sql.DB) error {
+		_, err := conn.Exec(
+			`UPDATE accounts SET disabled = 0, health_disabled = 0, last_error = NULL WHERE id = ?`,
+			id,
+		)
 		return err
 	})
 }
