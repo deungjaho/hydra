@@ -152,7 +152,7 @@ func SelectAccount(
 	modelLC := strings.ToLower(mappedModel)
 	var candidates []*account.Account
 	for _, a := range accounts {
-		if a.Disabled {
+		if a.Disabled() {
 			continue
 		}
 		if limiter.IsLimited(a.ID, mappedModel) {
@@ -232,7 +232,7 @@ func selectFallback(accounts []*account.Account, limiter *RateLimitTracker, mapp
 	var best *account.Account
 	var bestQuota int64
 	for _, a := range accounts {
-		if a.Disabled {
+		if a.Disabled() {
 			continue
 		}
 		// Skip rate-limited accounts if possible.
@@ -248,7 +248,7 @@ func selectFallback(accounts []*account.Account, limiter *RateLimitTracker, mapp
 	// Last resort: ignore cooldowns.
 	if best == nil {
 		for _, a := range accounts {
-			if a.Disabled {
+			if a.Disabled() {
 				continue
 			}
 			q := quotaRemainingOrZero(a)

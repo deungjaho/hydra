@@ -88,7 +88,7 @@ func computeStats(accounts []*account.Account, logs []*account.RequestLog) stats
 	var s stats
 	s.accountCount = len(accounts)
 	for _, a := range accounts {
-		if !a.Disabled {
+		if !a.Disabled() {
 			s.activeAccounts++
 		}
 	}
@@ -481,7 +481,7 @@ func (m *tuiModel) handleDelete() {
 func (m *tuiModel) handleToggle() {
 	if m.tab == tabAccounts && m.cursor < len(m.accounts) {
 		a := m.accounts[m.cursor]
-		newState := !a.Disabled
+		newState := !a.Disabled()
 		_ = account.SetAccountDisabled(m.db, a.ID, newState)
 		verb := "enabled"
 		if newState {
@@ -540,7 +540,7 @@ func (m tuiModel) refreshQuota() tea.Msg {
 	accs, _ := account.ListAccounts(m.db)
 	ok, errs := 0, 0
 	for _, a := range accs {
-		if a.Disabled {
+		if a.Disabled() {
 			continue
 		}
 		token := a.AccessToken
@@ -962,7 +962,7 @@ func (m tuiModel) renderAccounts() string {
 	for i, a := range m.accounts {
 		gw := a.QuotaWindowsParsed()
 		status := greenStyle.Render("active")
-		if a.Disabled {
+		if a.Disabled() {
 			status = redStyle.Render("disabled")
 		}
 		row := fmt.Sprintf("%-*d", idW, a.ID) + " " +

@@ -39,7 +39,7 @@ func (s *ProxyServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	accounts, _ := account.ListAccounts(s.State.DB)
 	active, disabled := 0, 0
 	for _, a := range accounts {
-		if a.Disabled {
+		if a.Disabled() {
 			disabled++
 		} else {
 			active++

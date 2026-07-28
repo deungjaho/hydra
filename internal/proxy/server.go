@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -45,20 +46,32 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 }
 
 // Serve starts the HTTP listener and blocks until ctx is cancelled or
-// the server fails to start. On ctx cancellation, in-flight requests
-// are allowed to finish (up to WriteTimeout) before returning.
+// the server fails to start. On ctx cancellation (normal SIGINT/SIGTERM),
+// in-flight requests are drained (up to 30s) and all background goroutines
+// are joined before returning. A normal signal-induced shutdown returns nil
+// (exit 0); only real listen/shutdown errors return non-nil.
 func (s *ProxyServer) Serve(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", s.Config.Proxy.Bind, s.Config.Proxy.Port)
 
-	// Background loops: token refresher (1-min) + quota refresher (5-min)
-	// + health check (configurable interval, default 2-min)
-	// + cleanup (5-min, evicts expired cooldowns and stale sticky bindings).
-	// All loops exit on ctx.Done().
-	go s.tokenRefresherLoop(ctx)
-	go s.quotaRefresherLoop(ctx)
-	go s.cleanupLoop(ctx)
+	// Derive a cancellable context so we can stop loops even when the
+	// parent ctx is not cancelled (e.g. listen error path).
+	loopCtx, cancelLoops := context.WithCancel(ctx)
+	defer cancelLoops()
+
+	// Background loops with join tracking. All loops exit on loopCtx.Done().
+	var wg sync.WaitGroup
+	runLoop := func(fn func(context.Context)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fn(loopCtx)
+		}()
+	}
+	runLoop(s.tokenRefresherLoop)
+	runLoop(s.quotaRefresherLoop)
+	runLoop(s.cleanupLoop)
 	if s.Config.HealthCheck.Enabled {
-		go s.healthCheckLoop(ctx)
+		runLoop(s.healthCheckLoop)
 	}
 
 	mux := http.NewServeMux()
@@ -85,20 +98,30 @@ func (s *ProxyServer) Serve(ctx context.Context) error {
 		errCh <- srv.ListenAndServe()
 	}()
 
+	var serveErr error
 	select {
 	case err := <-errCh:
-		return err
-	case <-ctx.Done():
+		// ListenAndServe returned (real error, e.g. port in use).
+		serveErr = err
+	case <-loopCtx.Done():
+		// Normal signal-induced shutdown (ctx cancelled by signal).
 		log.Printf("hydra proxy shutting down (graceful)...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("hydra proxy shutdown error: %v", err)
-			return err
+			serveErr = err
+		} else {
+			log.Printf("hydra proxy stopped")
 		}
-		log.Printf("hydra proxy stopped")
-		return ctx.Err()
+		shutdownCancel()
 	}
+
+	// Cancel loops and wait for all background goroutines to finish
+	// before returning. This ensures no goroutine accesses the DB
+	// after Serve returns and the caller closes it.
+	cancelLoops()
+	wg.Wait()
+	return serveErr
 }
 
 func (s *ProxyServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -1192,7 +1215,7 @@ func (s *ProxyServer) refreshExpiringTokens() {
 		return
 	}
 	for _, acc := range accounts {
-		if acc.Disabled || !account.NeedsRefresh(acc.ExpiresAt) {
+		if acc.Disabled() || !account.NeedsRefresh(acc.ExpiresAt) {
 			continue
 		}
 		tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
@@ -1239,7 +1262,7 @@ func RefreshAllQuotas(s *ProxyServer) error {
 	protectionEnabled := s.Config.QuotaProtection.Enabled
 
 	for _, acc := range accounts {
-		if acc.Disabled {
+		if acc.Disabled() {
 			continue
 		}
 		accessToken := acc.AccessToken
@@ -1333,9 +1356,9 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 
 	var allDown []AccountHealth
 	for _, acc := range accounts {
-		// Skip manually disabled accounts (disabled && !health_disabled).
+		// Skip operator-disabled accounts (user intent).
 		// Probe health-disabled accounts so they can auto-recover.
-		if acc.Disabled && !acc.HealthDisabled {
+		if acc.OperatorDisabled {
 			continue
 		}
 		healthy, reason := s.probeAccount(acc)
@@ -1343,7 +1366,7 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 			Email:    acc.Email,
 			Healthy:  healthy,
 			Reason:   reason,
-			Disabled: acc.Disabled,
+			Disabled: acc.Disabled(),
 		}
 
 		if healthy {
@@ -1376,8 +1399,12 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 		allDown = append(allDown, ah)
 	}
 
-	// If every non-disabled account is down, fire the all-down alert.
-	if len(allDown) > 0 && len(allDown) == countNonDisabled(accounts) {
+	// If every serviceable account (non-operator-disabled) is down,
+	// fire the all-down alert. health-disabled accounts are included
+	// in the "serviceable" set because they are candidates for recovery.
+	// Only operator-disabled accounts are excluded (user intent).
+	serviceable := countServiceable(accounts)
+	if len(allDown) > 0 && len(allDown) == serviceable {
 		s.State.Notifier.NotifyAllAccountsDown(allDown)
 	}
 }
@@ -1416,10 +1443,26 @@ func (s *ProxyServer) incrementHealthFailure(id int64) int {
 	return count
 }
 
+// countServiceable returns the number of accounts that are not
+// operator-disabled. This includes active accounts and health-disabled
+// accounts (which are candidates for recovery). Used by the health
+// checker to determine if all serviceable accounts are down.
+func countServiceable(accounts []*account.Account) int {
+	n := 0
+	for _, a := range accounts {
+		if !a.OperatorDisabled {
+			n++
+		}
+	}
+	return n
+}
+
+// countNonDisabled is retained for compatibility — it counts accounts
+// that are fully enabled (not operator-disabled and not health-disabled).
 func countNonDisabled(accounts []*account.Account) int {
 	n := 0
 	for _, a := range accounts {
-		if !a.Disabled {
+		if !a.Disabled() {
 			n++
 		}
 	}

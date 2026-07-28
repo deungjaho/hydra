@@ -189,7 +189,7 @@ func newAccountsCmd() *cobra.Command {
 			for _, a := range accs {
 				gw := a.QuotaWindowsParsed()
 				status := "active"
-				if a.Disabled {
+				if a.Disabled() {
 					status = "disabled"
 				}
 				fmt.Printf("%-4d %-26s %-14s %-14s %-14s %-14s %s\n",

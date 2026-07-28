@@ -17,12 +17,42 @@ type Db struct {
 	mu   sync.Mutex
 }
 
+// secureDBPermissions chmods the DB file and its WAL/SHM sidecars to 0600.
+// Returns an error if any chmod fails — the DB stores OAuth tokens,
+// refresh tokens, and API keys in plaintext, so permission failures
+// must be fatal (fail-closed).
+func secureDBPermissions(path string) error {
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	// WAL and SHM sidecars created by SQLite's WAL journal mode.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar := path + suffix
+		if _, err := os.Stat(sidecar); err == nil {
+			if err := os.Chmod(sidecar, 0o600); err != nil {
+				return fmt.Errorf("chmod %s: %w", sidecar, err)
+			}
+		}
+	}
+	return nil
+}
+
 func Open(path string) (*Db, error) {
 	if parent := filepath.Dir(path); parent != "" {
 		if err := os.MkdirAll(parent, 0o755); err != nil {
 			return nil, err
 		}
 	}
+	// Pre-create the file with 0600 before SQLite opens it, so the
+	// initial permissions are restrictive even before migration runs.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("create %s: %w", path, err)
+		}
+		_ = f.Close()
+	}
+
 	conn, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
@@ -34,9 +64,12 @@ func Open(path string) (*Db, error) {
 	if err := d.migrate(); err != nil {
 		return nil, err
 	}
-	// Enforce restrictive permissions — the DB stores OAuth tokens,
-	// refresh tokens, and API keys in plaintext.
-	_ = os.Chmod(path, 0o600)
+	// Enforce 0600 on DB + WAL + SHM. Fail-closed on error — the DB
+	// contains plaintext tokens and API keys.
+	if err := secureDBPermissions(path); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -136,6 +169,18 @@ func (d *Db) migrate() error {
 	}
 	// v8: distinguish health-check auto-disable from manual disable.
 	if err := ensureColumn(d.conn, "accounts", "health_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	// v9: replace single `disabled` column with `operator_disabled`.
+	// Derive initial value: disabled=1 AND health_disabled=0 means the
+	// operator manually disabled it. disabled=1 AND health_disabled=1
+	// means the health checker disabled it (operator_disabled stays 0).
+	if err := ensureColumn(d.conn, "accounts", "operator_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if _, err := d.conn.Exec(
+		`UPDATE accounts SET operator_disabled = 1 WHERE disabled = 1 AND health_disabled = 0`,
+	); err != nil {
 		return err
 	}
 	return nil

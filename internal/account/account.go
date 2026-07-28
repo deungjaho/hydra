@@ -10,29 +10,43 @@ import (
 )
 
 // Account is a bound Antigravity account.
+//
+// Disable state is a two-bit state machine:
+//   - OperatorDisabled: user manually disabled via CLI/TUI (authoritative)
+//   - HealthDisabled: health checker auto-disabled (auto-recoverable)
+//
+// An account is schedulable only when both are false.
+// OperatorDisabled takes precedence: health recovery never clears it.
 type Account struct {
-	ID              int64
-	Email           string
-	AccessToken     string
-	RefreshToken    string
-	ProjectID       string // empty if None
-	ExpiresAt       int64  // unix seconds
-	QuotaRemaining  int64  // 0 if unknown (NULL)
-	HasQuotaRem     bool   // true when QuotaRemaining is non-NULL
-	QuotaFetchedAt  int64  // 0 if NULL
-	HasQuotaFetched bool
-	QuotaJSON       string // empty if NULL
-	HasQuotaJSON    bool
-	QuotaSummary    string // empty if NULL
-	HasQuotaSummary bool
-	ProtectedModels []string
-	LastUsedAt      int64 // 0 if NULL
-	HasLastUsed     bool
-	LastError       string // empty if NULL
-	HasLastError    bool
-	Disabled        bool
-	HealthDisabled  bool // true = disabled by health check (auto-recoverable); false = disabled by user or active
-	CreatedAt       int64
+	ID               int64
+	Email            string
+	AccessToken      string
+	RefreshToken     string
+	ProjectID        string // empty if None
+	ExpiresAt        int64  // unix seconds
+	QuotaRemaining   int64  // 0 if unknown (NULL)
+	HasQuotaRem      bool   // true when QuotaRemaining is non-NULL
+	QuotaFetchedAt   int64  // 0 if NULL
+	HasQuotaFetched  bool
+	QuotaJSON        string // empty if NULL
+	HasQuotaJSON     bool
+	QuotaSummary     string // empty if NULL
+	HasQuotaSummary  bool
+	ProtectedModels  []string
+	LastUsedAt       int64 // 0 if NULL
+	HasLastUsed      bool
+	LastError        string // empty if NULL
+	HasLastError     bool
+	OperatorDisabled bool // user manually disabled (authoritative)
+	HealthDisabled   bool // health check auto-disabled (auto-recoverable)
+	CreatedAt        int64
+}
+
+// Disabled returns true if the account is not schedulable — either
+// operator-disabled or health-disabled. This is the single source of
+// truth for scheduling decisions.
+func (a *Account) Disabled() bool {
+	return a.OperatorDisabled || a.HealthDisabled
 }
 
 // QuotaModel is one entry parsed from quota_json.
