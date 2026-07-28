@@ -1,8 +1,8 @@
 # Hydra 阶段交接文档
 
-**最后更新**: 2026-07-28 21:30
+**最后更新**: 2026-07-28 21:45
 **HEAD**: `db75385` P2-A.1: CLI contract closure
-**建议 tag**: `v0.5.0` (未打)
+**建议 source-stage tag**: `v0.5.0-alpha.1` (未打)
 
 ---
 
@@ -15,10 +15,18 @@
 | Git clean | clean | `git status -s` |
 | gofmt | 无 diff | `gofmt -l .` |
 | go vet | 通过 | `go vet ./...` |
-| go build | 通过 | `go build -o /tmp/hydra-verify ./cmd/hydra` |
+| go build (macOS) | 通过 | `go build -o /tmp/hydra-verify ./cmd/hydra` |
+| cross build (Linux amd64) | 通过，静态链接 | `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/hydra-linux ./cmd/hydra` |
 | go test -race | 全 7 包通过 | `go test ./... -race -timeout 120s -count=1` |
 | 测试函数数 | 224 | `grep -rn "func Test" --include="*_test.go" \| wc -l` |
 | shutdown race (3x) | 稳定 | `go test ./internal/proxy/ -race -run "Shutdown\|Drain\|Loop" -count=3` |
+
+### 二进制构建兼容性
+
+- SQLite 驱动: `modernc.org/sqlite v1.54.0` — 纯 Go 实现，**无 CGO 依赖**
+- 交叉编译: `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build` 生成静态链接 ELF，目标架构 x86-64
+- omarchy: Arch Linux, kernel 7.1.3, x86-64 — 兼容
+- 无动态库依赖，不需要目标机器安装任何 native 库
 
 ### 关键测试覆盖
 
@@ -38,6 +46,8 @@
 omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 源码 HEAD = `db75385` (Jul 28 18:39)。**落后 8 个 commit**。
 
+**部署未验证**：以下 GAP 基于源码审查和 omarchy 只读探测，新二进制从未在 omarchy 上运行过。
+
 ### GAP 清单
 
 | Commit | 内容 | 部署影响 | 严重性 |
@@ -53,7 +63,7 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 | `618b2ac` | P2-A: application service, JSON output | CLI 无 --output/--version/status/doctor | 低 |
 | `db75385` | P2-A.1: CLI contract closure | 错误渲染不统一，无 exit code 映射 | 低 |
 
-### 生产环境实测结果 (2026-07-28 21:00)
+### 生产环境实测结果 (2026-07-28 21:00，只读探测)
 
 | 端点 | 部署版本响应 | HEAD 源码预期 |
 |------|-------------|--------------|
@@ -106,8 +116,21 @@ omarchy 生产部署版本 = `v0.4.16` = commit `dfce59b` (Jul 27 19:42)。
 ### 风险：WAL checkpoint
 
 旧 DB 有 4MB WAL 文件。迁移的 ALTER TABLE 会触发 WAL 写入。如果迁移过程中断（如 OOM），WAL 可能包含部分迁移结果。SQLite 的 WAL 恢复机制可以处理这种情况，但建议：
-- 迁移前备份 DB
+- 迁移前备份 DB（必须包含 WAL checkpoint 后的一致性快照）
 - 确保迁移过程中不强制 kill 进程
+
+### 风险：新代码 enable 不写 legacy disabled 列
+
+新代码 `SetAccountDisabled` 只写 `operator_disabled` 列：
+```sql
+UPDATE accounts SET operator_disabled = ? WHERE id = ?
+```
+旧代码 `SetAccountDisabled` 只写 `disabled` 列：
+```sql
+UPDATE accounts SET disabled = ? WHERE id = ?
+```
+
+迁移后用新代码 `hydra accounts enable 2` 会设置 `operator_disabled=0`，但 `disabled` 列仍为 1。如果回退到旧二进制，旧代码读 `disabled=1` → 账号仍 disabled。详见下方 Rollback 方案 A 的状态语义退化说明。
 
 ---
 
@@ -140,47 +163,79 @@ curl -s -H "Authorization: Bearer $KEY" \
   http://127.0.0.1:18045/v1/chat/completions
 ```
 
+**注意**：步骤 2 只设置 `operator_disabled=0`，不修改 legacy `disabled` 列。如果后续回退到旧二进制，需用旧二进制的 `hydra accounts enable 2/3` 重新设置 `disabled=0`。
+
 ---
 
 ## 5. Rollback 方案
 
-### 方案 A：回退二进制（推荐）
+### 方案 A：回退二进制（进程兼容，状态语义可能退化）
+
+旧二进制可以打开迁移后的 DB（新列被忽略，`user_version=9` 不影响旧代码），但**状态语义可能退化**：
 
 ```bash
-# 1. 保留旧二进制
-cp ~/.local/bin/hydra ~/.local/bin/hydra.v0.5.0
-cp ~/.local/bin/hydra.bak ~/.local/bin/hydra  # 恢复旧二进制
-
-# 2. 重启
-systemctl --user restart hydra.service
-
-# 3. 验证
-~/.local/bin/hydra --help  # 应无 version/status/doctor 命令
-curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/metrics  # 应返回 200 (旧版本无鉴权)
-```
-
-**注意**：v8/v9 migration 不可逆。回退到旧二进制后：
-- `health_disabled`/`operator_disabled` 列仍存在（旧代码忽略它们）
-- `user_version=9` 不会被旧代码重置
-- 旧代码继续使用 `disabled` 列，新列不影响行为
-- **安全**：可以安全回退
-
-### 方案 B：回退 DB（仅紧急情况）
-
-```bash
-# 1. 停止 hydra
+# 1. 停止新二进制
 systemctl --user stop hydra.service
 
-# 2. 恢复 DB 备份
-cp ~/.config/hydra/hydra.db.bak ~/.config/hydra/hydra.db
-rm -f ~/.config/hydra/hydra.db-wal ~/.config/hydra/hydra.db-shm
-
-# 3. 恢复旧二进制
+# 2. 恢复旧二进制
 cp ~/.local/bin/hydra.bak ~/.local/bin/hydra
 
-# 4. 重启
+# 3. 重启
 systemctl --user start hydra.service
+
+# 4. 验证进程启动
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/healthz  # 应返回 200
 ```
+
+**状态语义退化**：
+
+| 场景 | 迁移后状态 | 回退后旧代码看到 | 影响 |
+|------|-----------|-----------------|------|
+| 账号被新代码 enable | `operator_disabled=0, disabled=1` | `disabled=1` → 仍 disabled | 账号不参与 pool |
+| 账号被新代码 disable | `operator_disabled=1, disabled=1` | `disabled=1` → disabled | 一致 |
+| 账号被新代码 health-disable | `health_disabled=1, disabled=1` | `disabled=1` → disabled | 一致（但旧代码无 health 恢复） |
+| 账号被新代码 health-recover | `health_disabled=0, operator_disabled=0, disabled=1` | `disabled=1` → 仍 disabled | **账号不恢复** |
+
+**回退后必须用旧二进制重新启用账号**：
+```bash
+~/.local/bin/hydra accounts enable 2   # 旧代码写 disabled=0
+~/.local/bin/hydra accounts enable 3
+```
+
+**不能描述为"安全回退"**：进程可以启动，但用新代码做过的 enable/health-recover 操作在旧代码下不可见，账号可能保持 disabled 状态。
+
+### 方案 B：回退 DB + 二进制（仅紧急情况）
+
+**前提**：`hydra.db.bak` 必须是部署前的一致性备份（迁移前、WAL checkpoint 后）。
+
+```bash
+# 1. 停止服务（必须先停，否则 WAL 会写回主 DB）
+systemctl --user stop hydra.service
+
+# 2. 确认进程已退出
+pgrep -af hydra  # 应无输出
+
+# 3. 删除迁移后的 WAL/SHM（它们包含迁移写入，不能混用旧备份）
+rm -f ~/.config/hydra/hydra.db-wal ~/.config/hydra/hydra.db-shm
+
+# 4. 恢复部署前的一致性备份
+cp ~/.config/hydra/hydra.db.bak ~/.config/hydra/hydra.db
+
+# 5. 恢复旧二进制
+cp ~/.local/bin/hydra.bak ~/.local/bin/hydra
+
+# 6. 重启
+systemctl --user start hydra.service
+
+# 7. 验证
+sqlite3 ~/.config/hydra/hydra.db "PRAGMA user_version;"  # 应为 0
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:18045/healthz  # 应返回 200
+```
+
+**注意**：
+- 步骤 3 必须在步骤 4 之前执行 — 迁移后的 WAL/SHM 包含 v8/v9 schema 变更，与旧 DB 主文件不兼容
+- 不能用迁移后的 DB 备份回退 — `user_version=9` 和新列已经写入，旧代码虽然能运行但状态语义已变
+- 备份必须是部署前创建的，不能用迁移后的快照
 
 ---
 
@@ -188,9 +243,12 @@ systemctl --user start hydra.service
 
 部署新二进制前，需要 master 明确批准以下操作：
 
-- [ ] **构建新二进制**：`GOOS=linux GOARCH=amd64 go build -o /tmp/hydra-linux ./cmd/hydra`
+- [ ] **构建 Linux 二进制**：
+      `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/hydra-linux ./cmd/hydra`
+      （纯 Go，无 CGO，静态链接，已在 MacBook 验证交叉编译成功）
 - [ ] **备份旧二进制**：`ssh omarchy 'cp ~/.local/bin/hydra ~/.local/bin/hydra.bak'`
-- [ ] **备份 DB**：`ssh omarchy 'cp ~/.config/hydra/hydra.db ~/.config/hydra/hydra.db.bak'`
+- [ ] **一致性备份 DB**（必须停服务后备份，确保 WAL 已 checkpoint）：
+      `ssh omarchy 'systemctl --user stop hydra.service && sqlite3 ~/.config/hydra/hydra.db ".backup ~/.config/hydra/hydra.db.bak" && systemctl --user start hydra.service'`
 - [ ] **传输新二进制**：`scp /tmp/hydra-linux omarchy:~/.local/bin/hydra`
 - [ ] **重启服务**：`ssh omarchy 'systemctl --user restart hydra.service'`
 - [ ] **验证迁移**：`ssh omarchy 'sqlite3 ~/.config/hydra/hydra.db "PRAGMA user_version;"'`（应为 9）
@@ -227,16 +285,17 @@ systemctl --user start hydra.service
 
 ---
 
-## 8. 建议 tag
+## 8. 建议 source-stage tag
 
 ```
-v0.5.0
+v0.5.0-alpha.1
 ```
 
 **理由**：
-- v0.4.x 系列是 pre-P2-A 的版本
-- P2-A 引入了 application service 层、typed error/DTO、JSON output、CLI 契约统一
-- 这是架构层面的 breaking change（CLI 接口、错误码、输出格式），符合 minor 版本升级
+- 本地源码验证通过（format/vet/race/build/224 测试），可作为 source-stage 里程碑
+- **不是稳定版本**：部署未验证，旧 DB 迁移有 backfill 语义风险，在线账号全 disabled 未恢复
+- v0.4.x 系列是 pre-P2-A 的已部署版本；P2-A 引入架构变更（application service、typed error/DTO、JSON output、CLI 契约统一）
+- alpha.1 表示源码阶段完成但部署验证未完成，后续部署验证通过后再考虑 v0.5.0
 - commit: `db75385401b5f8fb3871dcc9765e259c21d3393c`
 
 **未打 tag，等待 master 批准。**
