@@ -119,8 +119,20 @@ func (s *ProxyServer) Serve(ctx context.Context) error {
 	// Cancel loops and wait for all background goroutines to finish
 	// before returning. This ensures no goroutine accesses the DB
 	// after Serve returns and the caller closes it.
+	//
+	// The wait is bounded by a deadline (default 45s) so that a stuck
+	// in-flight HTTP call can't block shutdown indefinitely. All
+	// background HTTP calls now accept loopCtx, so cancellation
+	// propagates to in-flight requests immediately.
 	cancelLoops()
-	wg.Wait()
+	waitCh := make(chan struct{})
+	go func() { wg.Wait(); close(waitCh) }()
+	select {
+	case <-waitCh:
+		// All loops exited cleanly.
+	case <-time.After(45 * time.Second):
+		log.Printf("hydra proxy: shutdown deadline exceeded, some background tasks may not have exited cleanly")
+	}
 	return serveErr
 }
 
@@ -1179,7 +1191,7 @@ func setSSEHeaders(w http.ResponseWriter) {
 
 func (s *ProxyServer) quotaRefresherLoop(ctx context.Context) {
 	// Run once on boot, then every 5 minutes.
-	RefreshAllQuotas(s)
+	_ = RefreshAllQuotasCtx(ctx, s)
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -1187,7 +1199,7 @@ func (s *ProxyServer) quotaRefresherLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := RefreshAllQuotas(s); err != nil {
+			if err := RefreshAllQuotasCtx(ctx, s); err != nil {
 				log.Printf("background quota refresh failed: %v", err)
 			}
 		}
@@ -1204,22 +1216,28 @@ func (s *ProxyServer) tokenRefresherLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.refreshExpiringTokens()
+			s.refreshExpiringTokens(ctx)
 		}
 	}
 }
 
-func (s *ProxyServer) refreshExpiringTokens() {
+func (s *ProxyServer) refreshExpiringTokens(ctx context.Context) {
 	accounts, err := account.ListAccounts(s.State.DB)
 	if err != nil {
 		return
 	}
 	for _, acc := range accounts {
+		if ctx.Err() != nil {
+			return
+		}
 		if acc.Disabled() || !account.NeedsRefresh(acc.ExpiresAt) {
 			continue
 		}
-		tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
+		tok, expiresAt, err := account.RefreshTokenCtx(ctx, s.OAuth, acc.RefreshToken)
 		if err != nil {
+			if ctx.Err() != nil {
+				return // shutdown in progress
+			}
 			log.Printf("proactive token refresh failed for %s: %v", acc.Email, err)
 			continue
 		}
@@ -1250,6 +1268,13 @@ func (s *ProxyServer) cleanupLoop(ctx context.Context) {
 
 // RefreshAllQuotas refreshes quota for every bound account.
 func RefreshAllQuotas(s *ProxyServer) error {
+	return RefreshAllQuotasCtx(context.Background(), s)
+}
+
+// RefreshAllQuotasCtx is the context-aware variant. It checks ctx.Err()
+// between accounts and passes ctx to all external HTTP calls, so
+// shutdown can abort in-flight quota refreshes immediately.
+func RefreshAllQuotasCtx(ctx context.Context, s *ProxyServer) error {
 	accounts, err := account.ListAccounts(s.State.DB)
 	if err != nil {
 		return err
@@ -1262,13 +1287,19 @@ func RefreshAllQuotas(s *ProxyServer) error {
 	protectionEnabled := s.Config.QuotaProtection.Enabled
 
 	for _, acc := range accounts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if acc.Disabled() {
 			continue
 		}
 		accessToken := acc.AccessToken
 		if account.NeedsRefresh(acc.ExpiresAt) {
-			tok, expiresAt, err := account.RefreshToken(s.OAuth, acc.RefreshToken)
+			tok, expiresAt, err := account.RefreshTokenCtx(ctx, s.OAuth, acc.RefreshToken)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err() // shutdown in progress
+				}
 				log.Printf("refresh token failed for %s: %v", acc.Email, err)
 				continue
 			}
@@ -1277,8 +1308,11 @@ func RefreshAllQuotas(s *ProxyServer) error {
 			}
 			accessToken = tok
 		}
-		fetched, err := account.FetchQuota(s.OAuth, accessToken, acc.ProjectID)
+		fetched, err := account.FetchQuotaCtx(ctx, s.OAuth, accessToken, acc.ProjectID)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err() // shutdown in progress
+			}
 			log.Printf("fetch quota failed for %s: %v", acc.Email, err)
 			continue
 		}
@@ -1336,18 +1370,18 @@ func (s *ProxyServer) healthCheckLoop(ctx context.Context) {
 	defer ticker.Stop()
 
 	// Run once immediately at startup, then on every tick.
-	s.runHealthCheck(threshold)
+	s.runHealthCheck(ctx, threshold)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.runHealthCheck(threshold)
+			s.runHealthCheck(ctx, threshold)
 		}
 	}
 }
 
-func (s *ProxyServer) runHealthCheck(threshold int) {
+func (s *ProxyServer) runHealthCheck(ctx context.Context, threshold int) {
 	accounts, err := account.ListAccounts(s.State.DB)
 	if err != nil {
 		log.Printf("health check: list accounts failed: %v", err)
@@ -1356,12 +1390,15 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 
 	var allDown []AccountHealth
 	for _, acc := range accounts {
+		if ctx.Err() != nil {
+			return
+		}
 		// Skip operator-disabled accounts (user intent).
 		// Probe health-disabled accounts so they can auto-recover.
 		if acc.OperatorDisabled {
 			continue
 		}
-		healthy, reason := s.probeAccount(acc)
+		healthy, reason := s.probeAccount(ctx, acc)
 		ah := AccountHealth{
 			Email:    acc.Email,
 			Healthy:  healthy,
@@ -1413,11 +1450,14 @@ func (s *ProxyServer) runHealthCheck(threshold int) {
 // the token is fresh, then calls ProbeAccount (fetchAvailableModels).
 // Uses the short-timeout Probe client so a stuck account doesn't block
 // the health check goroutine for 60 seconds.
-func (s *ProxyServer) probeAccount(acc *account.Account) (bool, string) {
+func (s *ProxyServer) probeAccount(ctx context.Context, acc *account.Account) (bool, string) {
 	accessToken := acc.AccessToken
 	if account.NeedsRefresh(acc.ExpiresAt) {
-		tok, expiresAt, err := account.RefreshToken(s.Probe, acc.RefreshToken)
+		tok, expiresAt, err := account.RefreshTokenCtx(ctx, s.Probe, acc.RefreshToken)
 		if err != nil {
+			if ctx.Err() != nil {
+				return false, "shutdown in progress"
+			}
 			return false, fmt.Sprintf("token refresh: %v", err)
 		}
 		if err := account.UpdateTokens(s.State.DB, acc.ID, tok, expiresAt, ""); err != nil {
@@ -1426,7 +1466,10 @@ func (s *ProxyServer) probeAccount(acc *account.Account) (bool, string) {
 		accessToken = tok
 	}
 
-	if err := account.ProbeAccount(s.Probe, accessToken, acc.ProjectID); err != nil {
+	if err := account.ProbeAccountCtx(ctx, s.Probe, accessToken, acc.ProjectID); err != nil {
+		if ctx.Err() != nil {
+			return false, "shutdown in progress"
+		}
 		return false, err.Error()
 	}
 	return true, ""

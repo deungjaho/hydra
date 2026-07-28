@@ -2,6 +2,7 @@ package account
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -237,13 +238,19 @@ func FetchProjectID(client *http.Client, accessToken string) (string, error) {
 // RefreshToken refreshes an access_token using a refresh_token.
 // Returns (new_access_token, new_expires_at).
 func RefreshToken(client *http.Client, refreshToken string) (string, int64, error) {
+	return RefreshTokenCtx(context.Background(), client, refreshToken)
+}
+
+// RefreshTokenCtx is the context-aware variant. When ctx is cancelled,
+// the in-flight HTTP request is aborted immediately.
+func RefreshTokenCtx(ctx context.Context, client *http.Client, refreshToken string) (string, int64, error) {
 	form := url.Values{
 		"client_id":     {oauthClientID()},
 		"client_secret": {oauthClientSecret()},
 		"refresh_token": {refreshToken},
 		"grant_type":    {"refresh_token"},
 	}
-	req, err := http.NewRequest("POST", oauthTokenURL, strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", oauthTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", 0, err
 	}

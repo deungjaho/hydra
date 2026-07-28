@@ -18,7 +18,7 @@ type Db struct {
 }
 
 // secureDBPermissions chmods the DB file and its WAL/SHM sidecars to 0600.
-// Returns an error if any chmod fails — the DB stores OAuth tokens,
+// Returns an error if any chmod or stat fails — the DB stores OAuth tokens,
 // refresh tokens, and API keys in plaintext, so permission failures
 // must be fatal (fail-closed).
 func secureDBPermissions(path string) error {
@@ -28,10 +28,19 @@ func secureDBPermissions(path string) error {
 	// WAL and SHM sidecars created by SQLite's WAL journal mode.
 	for _, suffix := range []string{"-wal", "-shm"} {
 		sidecar := path + suffix
-		if _, err := os.Stat(sidecar); err == nil {
+		info, err := os.Stat(sidecar)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				continue
+			}
 			if err := os.Chmod(sidecar, 0o600); err != nil {
 				return fmt.Errorf("chmod %s: %w", sidecar, err)
 			}
+		} else if !os.IsNotExist(err) {
+			// Stat failed for a reason other than "file doesn't exist"
+			// — this is unexpected and could indicate a permissions issue
+			// or filesystem error. Fail-closed.
+			return fmt.Errorf("stat %s: %w", sidecar, err)
 		}
 	}
 	return nil
@@ -45,7 +54,10 @@ func Open(path string) (*Db, error) {
 	}
 	// Pre-create the file with 0600 before SQLite opens it, so the
 	// initial permissions are restrictive even before migration runs.
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", path, err)
+		}
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, fmt.Errorf("create %s: %w", path, err)
@@ -58,10 +70,12 @@ func Open(path string) (*Db, error) {
 		return nil, err
 	}
 	if _, err := conn.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;"); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	d := &Db{conn: conn}
 	if err := d.migrate(); err != nil {
+		_ = conn.Close()
 		return nil, err
 	}
 	// Enforce 0600 on DB + WAL + SHM. Fail-closed on error — the DB
@@ -172,16 +186,31 @@ func (d *Db) migrate() error {
 		return err
 	}
 	// v9: replace single `disabled` column with `operator_disabled`.
-	// Derive initial value: disabled=1 AND health_disabled=0 means the
-	// operator manually disabled it. disabled=1 AND health_disabled=1
-	// means the health checker disabled it (operator_disabled stays 0).
+	//
+	// The column addition (ensureColumn) is idempotent and safe to run
+	// every time. The data backfill (UPDATE) is NOT idempotent — new
+	// code stops syncing the legacy `disabled` column, so running the
+	// backfill again would re-disable accounts that were manually
+	// enabled after the first migration. Guard it with user_version.
 	if err := ensureColumn(d.conn, "accounts", "operator_disabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if _, err := d.conn.Exec(
-		`UPDATE accounts SET operator_disabled = 1 WHERE disabled = 1 AND health_disabled = 0`,
-	); err != nil {
+	var userVersion int
+	if err := d.conn.QueryRow("PRAGMA user_version").Scan(&userVersion); err != nil {
 		return err
+	}
+	if userVersion < 9 {
+		// One-time backfill: derive operator_disabled from legacy state.
+		// disabled=1 AND health_disabled=0 → operator manually disabled.
+		// disabled=1 AND health_disabled=1 → health check disabled (operator stays 0).
+		if _, err := d.conn.Exec(
+			`UPDATE accounts SET operator_disabled = 1 WHERE disabled = 1 AND health_disabled = 0`,
+		); err != nil {
+			return err
+		}
+		if _, err := d.conn.Exec("PRAGMA user_version = 9"); err != nil {
+			return err
+		}
 	}
 	return nil
 }

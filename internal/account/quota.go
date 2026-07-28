@@ -2,6 +2,7 @@ package account
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,12 +40,17 @@ type QuotaWindowInfo struct {
 
 // FetchQuota fetches both the model list and the 4-window summary.
 func FetchQuota(client *http.Client, accessToken, projectID string) (*FetchedQuota, error) {
+	return FetchQuotaCtx(context.Background(), client, accessToken, projectID)
+}
+
+// FetchQuotaCtx is the context-aware variant.
+func FetchQuotaCtx(ctx context.Context, client *http.Client, accessToken, projectID string) (*FetchedQuota, error) {
 	payload := []byte("{}")
 	if projectID != "" {
 		payload, _ = json.Marshal(map[string]string{"project": projectID})
 	}
 
-	modelsBody, summaryBody, err := fetchBoth(client, accessToken, payload)
+	modelsBody, summaryBody, err := fetchBoth(ctx, client, accessToken, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -62,17 +68,20 @@ func FetchQuota(client *http.Client, accessToken, projectID string) (*FetchedQuo
 	}, nil
 }
 
-func fetchBoth(client *http.Client, accessToken string, payload []byte) (string, string, error) {
+func fetchBoth(ctx context.Context, client *http.Client, accessToken string, payload []byte) (string, string, error) {
 	var lastErr error
 	for _, host := range quotaHosts {
+		if ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
 		modelsURL := host + "/v1internal:fetchAvailableModels"
 		summaryURL := host + "/v1internal:retrieveUserQuotaSummary"
-		modelsResp, err := postJSON(client, modelsURL, accessToken, payload)
+		modelsResp, err := postJSON(ctx, client, modelsURL, accessToken, payload)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		summaryResp, err := postJSON(client, summaryURL, accessToken, payload)
+		summaryResp, err := postJSON(ctx, client, summaryURL, accessToken, payload)
 		if err != nil {
 			lastErr = err
 			continue
@@ -95,8 +104,8 @@ type rawResp struct {
 	body   string
 }
 
-func postJSON(client *http.Client, urlStr, accessToken string, payload []byte) (*rawResp, error) {
-	req, err := http.NewRequest("POST", urlStr, bytes.NewReader(payload))
+func postJSON(ctx context.Context, client *http.Client, urlStr, accessToken string, payload []byte) (*rawResp, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -269,14 +278,22 @@ func parseSummary(body string) (string, []QuotaWindowInfo) {
 //
 // Returns nil if healthy, or an error describing the failure.
 func ProbeAccount(client *http.Client, accessToken, projectID string) error {
+	return ProbeAccountCtx(context.Background(), client, accessToken, projectID)
+}
+
+// ProbeAccountCtx is the context-aware variant.
+func ProbeAccountCtx(ctx context.Context, client *http.Client, accessToken, projectID string) error {
 	payload := []byte("{}")
 	if projectID != "" {
 		payload, _ = json.Marshal(map[string]string{"project": projectID})
 	}
 	var lastErr error
 	for _, host := range quotaHosts {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		modelsURL := host + "/v1internal:fetchAvailableModels"
-		resp, err := postJSON(client, modelsURL, accessToken, payload)
+		resp, err := postJSON(ctx, client, modelsURL, accessToken, payload)
 		if err != nil {
 			lastErr = err
 			continue
