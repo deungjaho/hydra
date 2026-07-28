@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/deungjaho/hydra/internal/account"
+	"github.com/deungjaho/hydra/internal/app"
+	"github.com/deungjaho/hydra/internal/cli/output"
 	"github.com/deungjaho/hydra/internal/config"
 	"github.com/deungjaho/hydra/internal/db"
 	"github.com/deungjaho/hydra/internal/proxy"
@@ -35,6 +38,11 @@ func NewRootCmd() *cobra.Command {
 		},
 	}
 
+	// Global persistent flags.
+	root.PersistentFlags().String("output", "table", "output format: table|json")
+	root.PersistentFlags().Bool("no-color", false, "disable color output")
+	root.PersistentFlags().Bool("quiet", false, "suppress non-essential output")
+
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newAccountsCmd())
 	root.AddCommand(newQuotaCmd())
@@ -42,6 +50,9 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(newUsageCmd())
 	root.AddCommand(newKeyCmd())
 	root.AddCommand(newConfigCmd())
+	root.AddCommand(newStatusCmd())
+	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newVersionCmd())
 	return root
 }
 
@@ -170,15 +181,30 @@ func newAccountsCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all bound accounts",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r := getRenderer(cmd)
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				return err
+				ae := &app.AppError{Code: app.CodeUnavailable, Message: err.Error(), Cause: err}
+				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
+				return ae
 			}
 			defer d.Close()
 			accs, err := account.ListAccounts(d)
 			if err != nil {
-				return err
+				ae := app.AsAppError(err)
+				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
+				return ae
 			}
+			// Build DTO views for JSON output.
+			svc := app.NewService(d, nil, app.WithVersion(Version))
+			views := make([]app.AccountView, 0, len(accs))
+			for _, a := range accs {
+				views = append(views, svc.AccountToView(a))
+			}
+			if r.Format == output.FormatJSON {
+				return r.WriteSuccess(views, nil)
+			}
+			// Table mode — preserve existing format with quota windows.
 			if len(accs) == 0 {
 				fmt.Println("No accounts bound. Run `hydra accounts add` to bind one.")
 				return nil
@@ -189,8 +215,10 @@ func newAccountsCmd() *cobra.Command {
 			for _, a := range accs {
 				gw := a.QuotaWindowsParsed()
 				status := "active"
-				if a.Disabled() {
-					status = "disabled"
+				if a.OperatorDisabled {
+					status = "op-disabled"
+				} else if a.HealthDisabled {
+					status = "health-disabled"
 				}
 				fmt.Printf("%-4d %-26s %-14s %-14s %-14s %-14s %s\n",
 					a.ID, a.Email,
@@ -550,15 +578,30 @@ func newKeyCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List all API keys with usage stats",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			r := getRenderer(cmd)
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				return err
+				ae := &app.AppError{Code: app.CodeUnavailable, Message: err.Error(), Cause: err}
+				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
+				return ae
 			}
 			defer d.Close()
 			keys, err := account.ListAPIKeys(d)
 			if err != nil {
-				return err
+				ae := app.AsAppError(err)
+				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
+				return ae
 			}
+			// Build DTO views for JSON — never includes full key value.
+			svc := app.NewService(d, nil, app.WithVersion(Version))
+			views := make([]app.KeyView, 0, len(keys))
+			for _, k := range keys {
+				views = append(views, svc.KeyToView(k))
+			}
+			if r.Format == output.FormatJSON {
+				return r.WriteSuccess(views, nil)
+			}
+			// Table mode — preserve existing format with usage stats.
 			if len(keys) == 0 {
 				fmt.Println("No API keys. Run `hydra key add <label>` to create one.")
 				return nil
@@ -847,10 +890,18 @@ func orInt64(has bool, v, def int64) int64 {
 	return v
 }
 
-// Run is the entry point used by main.go.
+// Run is the entry point used by main.go. It maps errors to exit
+// codes per §12.6: 0=success, 2=usage, 3=config, 4=dependency, 5=permission,
+// 1=other. If the error is an *app.AppError, its ExitCode() is used.
 func Run() int {
 	root := NewRootCmd()
 	if err := root.Execute(); err != nil {
+		// Map app.AppError to exit code; default to 1 for generic errors.
+		var appErr *app.AppError
+		if errors.As(err, &appErr) {
+			fmt.Fprintln(os.Stderr, appErr.Error())
+			return appErr.ExitCode()
+		}
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
