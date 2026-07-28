@@ -22,6 +22,10 @@ import (
 //   hydra_api_keys_total{status}                      gauge
 //   hydra_uptime_seconds                              gauge
 func (s *ProxyServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.checkAuth(r); !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	var b strings.Builder
 

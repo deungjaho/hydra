@@ -74,6 +74,15 @@ func (s *ProxyServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *ProxyServer) handleListModels(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.checkAuth(r); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"error": map[string]any{
+				"code":    "UNAUTHORIZED",
+				"message": "API key required",
+			},
+		})
+		return
+	}
 	accounts, _ := account.ListAccounts(s.State.DB)
 	models := DynamicModelList(accounts)
 	data := make([]any, 0, len(models))
@@ -795,7 +804,12 @@ func (s *ProxyServer) checkAuthFull(r *http.Request) (*account.ApiKey, bool) {
 
 	if provided == "" {
 		// No key presented → only allow if no keys configured at all (first run).
-		keys, _ := account.ListAPIKeys(s.State.DB)
+		// DB error → fail-closed (deny all) rather than degrading to open access.
+		keys, err := account.ListAPIKeys(s.State.DB)
+		if err != nil {
+			log.Printf("auth: ListAPIKeys failed (fail-closed): %v", err)
+			return nil, false
+		}
 		if len(keys) == 0 {
 			return nil, true // open access until keys are created
 		}
@@ -803,10 +817,15 @@ func (s *ProxyServer) checkAuthFull(r *http.Request) (*account.ApiKey, bool) {
 	}
 
 	// Check DB keys only.
-	if k, err := account.FindAPIKey(s.State.DB, provided); err == nil && k != nil {
-		return k, true
+	k, err := account.FindAPIKey(s.State.DB, provided)
+	if err != nil {
+		log.Printf("auth: FindAPIKey failed (fail-closed): %v", err)
+		return nil, false
 	}
-	return nil, false
+	if k == nil {
+		return nil, false // key not found
+	}
+	return k, true
 }
 
 func clientIPFrom(r *http.Request) string {

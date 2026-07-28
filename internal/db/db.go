@@ -34,6 +34,9 @@ func Open(path string) (*Db, error) {
 	if err := d.migrate(); err != nil {
 		return nil, err
 	}
+	// Enforce restrictive permissions — the DB stores OAuth tokens,
+	// refresh tokens, and API keys in plaintext.
+	_ = os.Chmod(path, 0o600)
 	return d, nil
 }
 
