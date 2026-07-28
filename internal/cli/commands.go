@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -29,9 +30,22 @@ func NewRootCmd() *cobra.Command {
 		Short: "Hydra — terminal AI proxy gateway for Antigravity accounts",
 		// No subcommand → launch the TUI dashboard.
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --version short-circuits before TUI.
+			if ver, _ := cmd.Flags().GetBool("version"); ver {
+				r := getRenderer(cmd)
+				v := app.VersionView{Version: Version, Commit: Commit}
+				return r.WriteSuccess(v, func(w io.Writer) error {
+					fmt.Fprintf(w, "hydra %s", v.Version)
+					if v.Commit != "" {
+						fmt.Fprintf(w, " (commit: %s)", v.Commit)
+					}
+					fmt.Fprintln(w)
+					return nil
+				})
+			}
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeUnavailable, Message: "database is not available", Cause: err}
 			}
 			defer d.Close()
 			return RunTUI(d)
@@ -42,6 +56,24 @@ func NewRootCmd() *cobra.Command {
 	root.PersistentFlags().String("output", "table", "output format: table|json")
 	root.PersistentFlags().Bool("no-color", false, "disable color output")
 	root.PersistentFlags().Bool("quiet", false, "suppress non-essential output")
+	root.Flags().Bool("version", false, "print version information and exit")
+
+	// Validate --output at parse time via PersistentPreRun.
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		formatStr, _ := cmd.Flags().GetString("output")
+		if formatStr != "table" && formatStr != "json" {
+			return &app.AppError{
+				Code:    app.CodeInvalidArgument,
+				Message: fmt.Sprintf("invalid output format %q: must be table or json", formatStr),
+			}
+		}
+		return nil
+	}
+
+	// Silence Cobra's default error printing — we handle all error
+	// rendering in Run() at the root boundary.
+	root.SilenceErrors = true
+	root.SilenceUsage = true
 
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newAccountsCmd())
@@ -184,16 +216,12 @@ func newAccountsCmd() *cobra.Command {
 			r := getRenderer(cmd)
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				ae := &app.AppError{Code: app.CodeUnavailable, Message: err.Error(), Cause: err}
-				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
-				return ae
+				return &app.AppError{Code: app.CodeUnavailable, Message: "database is not available", Cause: err}
 			}
 			defer d.Close()
 			accs, err := account.ListAccounts(d)
 			if err != nil {
-				ae := app.AsAppError(err)
-				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
-				return ae
+				return app.AsAppError(err)
 			}
 			// Build DTO views for JSON output.
 			svc := app.NewService(d, nil, app.WithVersion(Version))
@@ -238,18 +266,21 @@ func newAccountsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid account id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.RemoveAccount(d, id); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.RemoveAccount(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("✓ Removed account %d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "removed": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "✓ Removed account %d\n", id)
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -293,18 +324,21 @@ func newAccountsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid account id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.SetAccountDisabled(d, id, false); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.EnableAccount(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("✓ Enabled account %d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "enabled": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "✓ Enabled account %d\n", id)
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -314,18 +348,21 @@ func newAccountsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid account id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.SetAccountDisabled(d, id, true); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.DisableAccount(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("✓ Disabled account %d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "disabled": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "✓ Disabled account %d\n", id)
+				return nil
+			})
 		},
 	})
 	return cmd
@@ -560,18 +597,21 @@ func newKeyCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			label := args[0]
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			newKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
-			id, err := account.AddAPIKey(d, newKey, label)
+			defer cleanup()
+			r := getRenderer(cmd)
+			result, err := svc.AddKey(cmd.Context(), label)
 			if err != nil {
-				return err
+				return app.AsAppError(err)
 			}
-			fmt.Printf("API key #%d added (label: %s)\n  %s\n", id, label, newKey)
-			return nil
+			return r.WriteSuccess(result, func(w io.Writer) error {
+				fmt.Fprintf(w, "API key #%d added (label: %s)\n  %s\n", result.ID, label, result.FullKey)
+				fmt.Fprintln(w, "  ⚠ Save this key now — it will not be shown again.")
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -581,16 +621,12 @@ func newKeyCmd() *cobra.Command {
 			r := getRenderer(cmd)
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				ae := &app.AppError{Code: app.CodeUnavailable, Message: err.Error(), Cause: err}
-				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
-				return ae
+				return &app.AppError{Code: app.CodeUnavailable, Message: "database is not available", Cause: err}
 			}
 			defer d.Close()
 			keys, err := account.ListAPIKeys(d)
 			if err != nil {
-				ae := app.AsAppError(err)
-				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
-				return ae
+				return app.AsAppError(err)
 			}
 			// Build DTO views for JSON — never includes full key value.
 			svc := app.NewService(d, nil, app.WithVersion(Version))
@@ -654,19 +690,36 @@ func newKeyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid key id: %s", args[0])}
+			}
+			svc, cleanup, err := newService(cmd)
+			if err != nil {
 				return err
+			}
+			defer cleanup()
+			// Verify key exists via service — produces NOT_FOUND, not DB error.
+			k, err := svc.Keys.GetAPIKey(id)
+			if err != nil {
+				return app.AsAppError(err)
+			}
+			if k == nil {
+				return app.NotFound("key", id)
 			}
 			d, err := db.Open(config.DBPath())
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeUnavailable, Message: "database is not available", Cause: err}
 			}
 			defer d.Close()
 			newKey := "hydra-" + strings.ReplaceAll(uuid.NewString(), "-", "")
 			if err := account.RotateAPIKey(d, id, newKey); err != nil {
-				return err
+				return app.AsAppError(err)
 			}
-			fmt.Printf("API key #%d rotated\n  %s\n", id, newKey)
-			return nil
+			r := getRenderer(cmd)
+			return r.WriteSuccess(map[string]any{"id": id, "full_key": newKey}, func(w io.Writer) error {
+				fmt.Fprintf(w, "API key #%d rotated\n  %s\n", id, newKey)
+				fmt.Fprintln(w, "  ⚠ Save this key now — it will not be shown again.")
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -698,18 +751,21 @@ func newKeyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid key id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.RemoveAPIKey(d, id); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.RemoveKey(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("Removed API key #%d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "removed": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "Removed API key #%d\n", id)
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -719,18 +775,21 @@ func newKeyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid key id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.SetAPIKeyDisabled(d, id, true); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.DisableKey(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("Disabled API key #%d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "disabled": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "Disabled API key #%d\n", id)
+				return nil
+			})
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -740,18 +799,21 @@ func newKeyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid key id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			defer d.Close()
-			if err := account.SetAPIKeyDisabled(d, id, false); err != nil {
-				return err
+			defer cleanup()
+			r := getRenderer(cmd)
+			if err := svc.EnableKey(cmd.Context(), id); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("Enabled API key #%d\n", id)
-			return nil
+			return r.WriteSuccess(map[string]any{"id": id, "enabled": true}, func(w io.Writer) error {
+				fmt.Fprintf(w, "Enabled API key #%d\n", id)
+				return nil
+			})
 		},
 	})
 	// update [id] --scheduling-mode <mode> --no-sticky
@@ -762,14 +824,8 @@ func newKeyCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, err := parseID(args[0])
 			if err != nil {
-				return err
+				return &app.AppError{Code: app.CodeInvalidArgument, Message: fmt.Sprintf("invalid key id: %s", args[0])}
 			}
-			d, err := db.Open(config.DBPath())
-			if err != nil {
-				return err
-			}
-			defer d.Close()
-
 			schedMode, _ := cmd.Flags().GetString("scheduling-mode")
 			noSticky, _ := cmd.Flags().GetBool("no-sticky")
 			clearSched, _ := cmd.Flags().GetBool("clear-scheduling")
@@ -778,7 +834,6 @@ func newKeyCmd() *cobra.Command {
 			if clearSched {
 				schedMode = ""
 			}
-			// If --clear-no-sticky is set, we need to write false explicitly.
 			if clearNoSticky {
 				noSticky = false
 			}
@@ -787,25 +842,38 @@ func newKeyCmd() *cobra.Command {
 			switch schedMode {
 			case "", "cache", "balance", "performance":
 			default:
-				return fmt.Errorf("invalid scheduling-mode %q: must be cache, balance, or performance", schedMode)
+				return &app.AppError{
+					Code:    app.CodeInvalidArgument,
+					Message: fmt.Sprintf("invalid scheduling-mode %q: must be cache, balance, or performance", schedMode),
+				}
 			}
 
-			if err := account.UpdateAPIKeyScheduling(d, id, schedMode, noSticky); err != nil {
-				return err
-			}
-
-			k, err := account.GetAPIKey(d, id)
+			svc, cleanup, err := newService(cmd)
 			if err != nil {
 				return err
 			}
-			fmt.Printf("API key #%d updated:\n", id)
-			if k.SchedulingMode == "" {
-				fmt.Printf("  scheduling-mode: (follow global)\n")
-			} else {
-				fmt.Printf("  scheduling-mode: %s\n", k.SchedulingMode)
+			defer cleanup()
+			if err := svc.UpdateKeyScheduling(cmd.Context(), id, schedMode, noSticky); err != nil {
+				return app.AsAppError(err)
 			}
-			fmt.Printf("  no-sticky: %v\n", k.NoSticky)
-			return nil
+			k, err := svc.Keys.GetAPIKey(id)
+			if err != nil {
+				return app.AsAppError(err)
+			}
+			if k == nil {
+				return app.NotFound("key", id)
+			}
+			r := getRenderer(cmd)
+			return r.WriteSuccess(map[string]any{"id": id, "scheduling_mode": k.SchedulingMode, "no_sticky": k.NoSticky}, func(w io.Writer) error {
+				fmt.Fprintf(w, "API key #%d updated:\n", id)
+				if k.SchedulingMode == "" {
+					fmt.Fprintln(w, "  scheduling-mode: (follow global)")
+				} else {
+					fmt.Fprintf(w, "  scheduling-mode: %s\n", k.SchedulingMode)
+				}
+				fmt.Fprintf(w, "  no-sticky: %v\n", k.NoSticky)
+				return nil
+			})
 		},
 	}
 	updateCmd.Flags().String("scheduling-mode", "", "Override scheduling mode: cache, balance, or performance (empty = follow global)")
@@ -892,18 +960,72 @@ func orInt64(has bool, v, def int64) int64 {
 
 // Run is the entry point used by main.go. It maps errors to exit
 // codes per §12.6: 0=success, 2=usage, 3=config, 4=dependency, 5=permission,
-// 1=other. If the error is an *app.AppError, its ExitCode() is used.
+// 1=other. Error rendering is centralized here — command handlers must
+// only return typed errors, not render themselves.
 func Run() int {
 	root := NewRootCmd()
-	if err := root.Execute(); err != nil {
-		// Map app.AppError to exit code; default to 1 for generic errors.
-		var appErr *app.AppError
-		if errors.As(err, &appErr) {
-			fmt.Fprintln(os.Stderr, appErr.Error())
-			return appErr.ExitCode()
-		}
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+	err := root.Execute()
+	if err == nil {
+		return 0
 	}
-	return 0
+
+	// Determine output format from the root command's persistent flags.
+	// On flag-parse errors, the flag may not be set yet — default to table.
+	format := output.FormatTable
+	if formatStr, perr := root.Flags().GetString("output"); perr == nil {
+		if formatStr == "json" {
+			format = output.FormatJSON
+		}
+	}
+
+	// Classify the error.
+	var appErr *app.AppError
+	if errors.As(err, &appErr) {
+		// Typed application error — render via the unified renderer.
+		r := output.NewRenderer(format)
+		_ = r.WriteError(string(appErr.Code), appErr.Message, appErr.Retryable, appErr.Details)
+		return appErr.ExitCode()
+	}
+
+	// Cobra usage/flag errors produce exit 2.
+	if isUsageError(err, root) {
+		if format == output.FormatJSON {
+			r := output.NewRenderer(format)
+			_ = r.WriteError("INVALID_ARGUMENT", err.Error(), false, nil)
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return app.ExitUsage
+	}
+
+	// Generic error — render as INTERNAL.
+	if format == output.FormatJSON {
+		r := output.NewRenderer(format)
+		_ = r.WriteError("INTERNAL", err.Error(), false, nil)
+	} else {
+		fmt.Fprintln(os.Stderr, err)
+	}
+	return app.ExitGeneric
+}
+
+// isUsageError returns true for Cobra flag/usage errors. Cobra marks
+// these errors by setting SilenceUsage=false on the command that produced
+// them. We detect them by checking if the error is a pflag error or if
+// the command's SilenceUsage is false and the error is not from RunE.
+func isUsageError(err error, root *cobra.Command) bool {
+	if err == nil {
+		return false
+	}
+	// pflag errors and cobra argument errors contain these patterns.
+	msg := err.Error()
+	if strings.Contains(msg, "unknown flag") ||
+		strings.Contains(msg, "invalid argument") ||
+		strings.Contains(msg, "requires at least") ||
+		strings.Contains(msg, "accepts at most") ||
+		strings.Contains(msg, "accepts between") ||
+		strings.Contains(msg, "unknown command") ||
+		strings.Contains(msg, "exactly") {
+		return true
+	}
+	return false
 }

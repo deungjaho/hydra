@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"strings"
 	"time"
 
@@ -85,7 +86,11 @@ func (s *dbAccountStore) ListAccounts() ([]*account.Account, error) {
 	return account.ListAccounts(s.d)
 }
 func (s *dbAccountStore) GetAccount(id int64) (*account.Account, error) {
-	return account.GetAccount(s.d, id)
+	a, err := account.GetAccount(s.d, id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return a, err
 }
 func (s *dbAccountStore) SetAccountDisabled(id int64, disabled bool) error {
 	return account.SetAccountDisabled(s.d, id, disabled)
@@ -103,7 +108,11 @@ func (s *dbKeyStore) AddAPIKey(key, label string) (int64, error) {
 	return account.AddAPIKey(s.d, key, label)
 }
 func (s *dbKeyStore) GetAPIKey(id int64) (*account.ApiKey, error) {
-	return account.GetAPIKey(s.d, id)
+	k, err := account.GetAPIKey(s.d, id)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return k, err
 }
 func (s *dbKeyStore) RemoveAPIKey(id int64) error {
 	return account.RemoveAPIKey(s.d, id)

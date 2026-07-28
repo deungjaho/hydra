@@ -14,12 +14,13 @@ import (
 )
 
 // newService creates an app.Service from the global flags + DB.
+// Returns a typed AppError so Run() can render it consistently.
 func newService(cmd *cobra.Command) (*app.Service, func(), error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, nil, &app.AppError{
 			Code:    app.CodeConfig,
-			Message: fmt.Sprintf("config load failed: %v", err),
+			Message: "configuration could not be loaded",
 			Cause:   err,
 		}
 	}
@@ -28,7 +29,7 @@ func newService(cmd *cobra.Command) (*app.Service, func(), error) {
 	if err != nil {
 		return nil, nil, &app.AppError{
 			Code:    app.CodeUnavailable,
-			Message: fmt.Sprintf("database open failed: %v", err),
+			Message: "database is not available",
 			Cause:   err,
 		}
 	}
@@ -66,9 +67,7 @@ func newStatusCmd() *cobra.Command {
 			r := getRenderer(cmd)
 			status, err := svc.Status(cmd.Context())
 			if err != nil {
-				ae := app.AsAppError(err)
-				_ = r.WriteError(string(ae.Code), ae.Message, ae.Retryable, ae.Details)
-				return ae
+				return app.AsAppError(err)
 			}
 			return r.WriteSuccess(status, func(w io.Writer) error {
 				fmt.Fprintf(w, "Hydra %s\n", status.Version)
@@ -101,7 +100,7 @@ func newDoctorCmd() *cobra.Command {
 			// Check 1: DB readable.
 			_, derr := svc.Accounts.ListAccounts()
 			if derr != nil {
-				checks = append(checks, app.DoctorCheck{Name: "database", Status: "fail", Detail: derr.Error()})
+				checks = append(checks, app.DoctorCheck{Name: "database", Status: "fail", Detail: "database is not readable"})
 			} else {
 				checks = append(checks, app.DoctorCheck{Name: "database", Status: "ok"})
 			}
@@ -114,7 +113,7 @@ func newDoctorCmd() *cobra.Command {
 			// Check 3: config file exists.
 			cfgPath := config.ConfigPath()
 			if _, err := os.Stat(cfgPath); err != nil {
-				checks = append(checks, app.DoctorCheck{Name: "config_file", Status: "warn", Detail: fmt.Sprintf("not found at %s (using defaults)", cfgPath)})
+				checks = append(checks, app.DoctorCheck{Name: "config_file", Status: "warn", Detail: "not found at expected path (using defaults)"})
 			} else {
 				checks = append(checks, app.DoctorCheck{Name: "config_file", Status: "ok"})
 			}
@@ -138,13 +137,19 @@ func newDoctorCmd() *cobra.Command {
 			}
 
 			ok := true
+			hasFail := false
 			for _, c := range checks {
 				if c.Status == "fail" {
+					ok = false
+					hasFail = true
+				}
+				if c.Status == "warn" {
 					ok = false
 				}
 			}
 			result := app.DoctorView{Checks: checks, OK: ok}
-			return r.WriteSuccess(result, func(w io.Writer) error {
+			// Write the diagnostic output first (always succeeds).
+			_ = r.WriteSuccess(result, func(w io.Writer) error {
 				for _, c := range checks {
 					fmt.Fprintf(w, "  [%s] %s", c.Status, c.Name)
 					if c.Detail != "" {
@@ -152,13 +157,24 @@ func newDoctorCmd() *cobra.Command {
 					}
 					fmt.Fprintln(w)
 				}
-				if ok {
-					fmt.Fprintln(w, "\nAll critical checks passed.")
-				} else {
+				if hasFail {
 					fmt.Fprintln(w, "\nSome checks failed.")
+				} else if !ok {
+					fmt.Fprintln(w, "\nAll critical checks passed (with warnings).")
+				} else {
+					fmt.Fprintln(w, "\nAll checks passed.")
 				}
 				return nil
 			})
+			// Critical failures must produce a non-zero exit code so
+			// automation can detect them. Warnings are exit 0.
+			if hasFail {
+				return &app.AppError{
+					Code:    app.CodeInternal,
+					Message: "one or more critical diagnostic checks failed",
+				}
+			}
+			return nil
 		},
 	}
 	return cmd

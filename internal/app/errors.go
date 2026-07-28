@@ -94,7 +94,8 @@ func WithDetails(details any) ErrorOption { return func(e *AppError) { e.Details
 
 // AsAppError unwraps a generic error into an AppError. If the error is
 // already an *AppError, it is returned as-is. Otherwise it is wrapped
-// as an internal error.
+// as an internal error with a safe generic message — the original error
+// is retained as Cause but not exposed to users by default.
 func AsAppError(err error) *AppError {
 	if err == nil {
 		return nil
@@ -105,7 +106,7 @@ func AsAppError(err error) *AppError {
 	}
 	return &AppError{
 		Code:    CodeInternal,
-		Message: err.Error(),
+		Message: "an internal error occurred",
 		Cause:   err,
 	}
 }
