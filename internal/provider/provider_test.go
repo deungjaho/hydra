@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,10 +18,87 @@ import (
 var _ Provider = (*GoogleCloudCodeProvider)(nil)
 var _ Provider = (*EchoProvider)(nil)
 
+// --- testDeps: a test-only ProxyDeps implementation ---
+
+type testDeps struct {
+	modelMap  map[string]string
+	models    []string
+	// transformResp is the response returned by TransformResponse.
+	transformResp map[string]any
+}
+
+func (d *testDeps) TransformRequest(req map[string]any, _, _ string, _ uint64) map[string]any {
+	return req
+}
+func (d *testDeps) AnthropicTransformRequest(req map[string]any, _, _ string, _ uint64) map[string]any {
+	return req
+}
+func (d *testDeps) TransformResponse(_ map[string]any, _ string) map[string]any {
+	if d.transformResp != nil {
+		return d.transformResp
+	}
+	return map[string]any{
+		"choices": []any{
+			map[string]any{
+				"message":      map[string]any{"content": "Hello from Gemini"},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]any{
+			"prompt_tokens":     int64(5),
+			"completion_tokens": int64(3),
+		},
+	}
+}
+func (d *testDeps) AnthropicTransformResponse(_ map[string]any, _ string) map[string]any {
+	if d.transformResp != nil {
+		return d.transformResp
+	}
+	return map[string]any{
+		"content": []any{
+			map[string]any{"type": "text", "text": "Hello from Gemini"},
+		},
+		"stop_reason": "end_turn",
+		"usage": map[string]any{
+			"input_tokens":  int64(5),
+			"output_tokens": int64(3),
+		},
+	}
+}
+func (d *testDeps) SendRequest(client *http.Client, _, _ string, body []byte, _ bool) (*http.Response, error) {
+	// Use the client's transport (mockTransport in tests) to get a canned response.
+	req, _ := http.NewRequest("POST", "http://mock", strings.NewReader(string(body)))
+	return client.Do(req)
+}
+func (d *testDeps) MapModel(model string) string {
+	if mapped, ok := d.modelMap[model]; ok {
+		return mapped
+	}
+	return ""
+}
+func (d *testDeps) SupportedModels() []string {
+	if d.models != nil {
+		return d.models
+	}
+	return []string{"gemini-2.5-flash", "gemini-2.5-pro"}
+}
+
+// defaultTestDeps returns a testDeps with standard model mappings.
+func defaultTestDeps() *testDeps {
+	return &testDeps{
+		modelMap: map[string]string{
+			"gpt-4":            "gemini-2.5-flash",
+			"gemini-2.5-flash": "gemini-2.5-flash",
+			"claude-sonnet-4-6": "gemini-2.5-flash",
+		},
+	}
+}
+
 // --- Test 1: GoogleCloudCodeProvider satisfies interface at runtime ---
 
 func TestGoogleCloudCodeProviderSatisfiesInterface(t *testing.T) {
 	g := &GoogleCloudCodeProvider{
+		Deps:        defaultTestDeps(),
 		HTTPClient:  &http.Client{},
 		AccessToken: "test-token",
 		ProjectID:   "test-project",
@@ -117,23 +193,18 @@ func TestEchoProviderSatisfiesInterface(t *testing.T) {
 // --- Test 3: Router failover on simulated 429 ---
 
 func TestRouterFailoverOn429(t *testing.T) {
-	// Create a mock upstream that returns 429.
 	mockUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"code":429,"message":"quota exceeded"}}`))
 	}))
 	defer mockUpstream.Close()
 
-	// GoogleCloudCodeProvider with a mock HTTP client that hits the
-	// mock upstream. We need to override the upstream URL — but
-	// proxy.SendRequest uses a hardcoded v1InternalBase. For the spike,
-	// we use a custom http.Client with a RoundTripper that redirects to
-	// the mock server and returns 429.
 	mockClient := &http.Client{
 		Transport: &mockTransport{status: 429, body: `{"error":{"code":429,"message":"quota exceeded"}}`},
 	}
 
 	google := &GoogleCloudCodeProvider{
+		Deps:        defaultTestDeps(),
 		HTTPClient:  mockClient,
 		AccessToken: "test-token",
 		ProjectID:   "test-project",
@@ -174,17 +245,18 @@ func TestRouterFailoverOn429(t *testing.T) {
 
 func TestRouterNoCompatibleProvider(t *testing.T) {
 	google := &GoogleCloudCodeProvider{
+		Deps:        defaultTestDeps(),
 		HTTPClient:  &http.Client{},
 		AccessToken: "test-token",
 		ProjectID:   "test-project",
 		Caps: CapabilitySet{
-			SupportsVision: false, // Google provider doesn't support vision in this test
+			SupportsVision: false,
 		},
 	}
 
 	echo := &EchoProvider{
 		Caps: CapabilitySet{
-			SupportsVision: false, // Echo also doesn't support vision
+			SupportsVision: false,
 		},
 	}
 
@@ -193,7 +265,7 @@ func TestRouterNoCompatibleProvider(t *testing.T) {
 	req := &Request{
 		Model: "some-vision-model",
 		RequiredCapabilities: CapabilitySet{
-			SupportsVision: true, // Request requires vision
+			SupportsVision: true,
 		},
 		Format:  FormatOpenAI,
 		RawBody: map[string]any{"model": "some-vision-model", "messages": []any{}},
@@ -214,7 +286,6 @@ func TestRouterNoCompatibleProvider(t *testing.T) {
 	if pe.Retryable != RetryNone {
 		t.Errorf("Retryable = %v, want RetryNone", pe.Retryable)
 	}
-	// Must not panic, must not hang — just a structured error.
 }
 
 // --- Test 5: Router does not failover on non-retryable error (401) ---
@@ -225,6 +296,7 @@ func TestRouterNoFailoverOn401(t *testing.T) {
 	}
 
 	google := &GoogleCloudCodeProvider{
+		Deps:        defaultTestDeps(),
 		HTTPClient:  mockClient,
 		AccessToken: "expired-token",
 		ProjectID:   "test-project",
@@ -271,27 +343,18 @@ func TestCapabilitySetCanServe(t *testing.T) {
 		ContextWindow:           8192,
 	}
 
-	// No requirements → always can serve.
 	if !caps.CanServe(CapabilitySet{}) {
 		t.Error("CanServe with no requirements should be true")
 	}
-
-	// Required streaming, we have it.
 	if !caps.CanServe(CapabilitySet{SupportsStreaming: true}) {
 		t.Error("CanServe with streaming requirement should be true")
 	}
-
-	// Required vision, we don't have it.
 	if caps.CanServe(CapabilitySet{SupportsVision: true}) {
 		t.Error("CanServe with vision requirement should be false")
 	}
-
-	// Required max output tokens exceeding our limit.
 	if caps.CanServe(CapabilitySet{MaxOutputTokens: 8192}) {
 		t.Error("CanServe with MaxOutputTokens > our limit should be false")
 	}
-
-	// Required max output tokens within our limit.
 	if !caps.CanServe(CapabilitySet{MaxOutputTokens: 2048}) {
 		t.Error("CanServe with MaxOutputTokens <= our limit should be true")
 	}
@@ -301,8 +364,8 @@ func TestCapabilitySetCanServe(t *testing.T) {
 
 func TestClassifyHTTPError(t *testing.T) {
 	tests := []struct {
-		status      int
-		wantCode    ErrorCode
+		status     int
+		wantCode   ErrorCode
 		wantRetry  RetryDecision
 	}{
 		{400, ErrBadRequest, RetryNone},
@@ -335,7 +398,6 @@ type mockTransport struct {
 }
 
 func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Drain the request body so the connection can be reused.
 	if req.Body != nil {
 		_, _ = io.Copy(io.Discard, req.Body)
 		req.Body.Close()
@@ -347,38 +409,20 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// Ensure mockTransport implements http.RoundTripper.
 var _ http.RoundTripper = (*mockTransport)(nil)
 
 // --- Test 8: GoogleCloudCodeProvider ChatCompletions with mock 200 ---
 
 func TestGoogleCloudCodeProviderChatCompletionsSuccess(t *testing.T) {
-	// Create a mock Gemini-style response.
-	geminiResp := map[string]any{
-		"candidates": []any{
-			map[string]any{
-				"content": map[string]any{
-					"parts": []any{
-						map[string]any{"text": "Hello from Gemini"},
-					},
-				},
-				"finishReason": "STOP",
-			},
-		},
-		"usageMetadata": map[string]any{
-			"promptTokenCount":     5,
-			"candidatesTokenCount": 3,
-		},
-	}
-	respBody, _ := json.Marshal(map[string]any{
-		"response": geminiResp,
-	})
-
+	// The mock deps' TransformResponse returns an OpenAI-format response.
+	// The mock transport returns a 200 with any body (the deps ignore it
+	// and return the canned response).
 	mockClient := &http.Client{
-		Transport: &mockTransport{status: 200, body: string(respBody)},
+		Transport: &mockTransport{status: 200, body: `{"response":{}}`},
 	}
 
 	g := &GoogleCloudCodeProvider{
+		Deps:        defaultTestDeps(),
 		HTTPClient:  mockClient,
 		AccessToken: "test-token",
 		ProjectID:   "test-project",
@@ -441,6 +485,48 @@ func TestEchoProviderStreaming(t *testing.T) {
 	}
 }
 
-// Suppress unused import warning for httptest (used in TestRouterFailoverOn429
-// setup but the mock is replaced by mockTransport).
-var _ = fmt.Sprintf
+// --- Test 10: GoogleCloudCodeProvider with ModelMap (no Deps) for lightweight selection ---
+
+func TestGoogleCloudCodeProviderModelMapSelection(t *testing.T) {
+	g := &GoogleCloudCodeProvider{
+		ModelMap: map[string]string{
+			"gpt-4":            "gemini-2.5-flash",
+			"gemini-2.5-flash": "gemini-2.5-flash",
+		},
+		Caps: CapabilitySet{SupportsStreaming: true, MaxOutputTokens: 65536, ContextWindow: 1000000},
+	}
+
+	// ResolveModel works without Deps (uses ModelMap).
+	mapped, ok := g.ResolveModel("gpt-4")
+	if !ok {
+		t.Error("ResolveModel(gpt-4) should succeed via ModelMap")
+	}
+	if mapped != "gemini-2.5-flash" {
+		t.Errorf("ResolveModel(gpt-4) = %q, want %q", mapped, "gemini-2.5-flash")
+	}
+
+	// Unknown model returns false.
+	_, ok = g.ResolveModel("unknown-model")
+	if ok {
+		t.Error("ResolveModel(unknown-model) should fail")
+	}
+
+	// ChatCompletions without Deps returns error.
+	_, err := g.ChatCompletions(context.Background(), &Request{
+		Model: "gpt-4", Format: FormatOpenAI, RawBody: map[string]any{},
+	})
+	if err == nil {
+		t.Fatal("ChatCompletions without Deps should return error")
+	}
+	pe, ok := err.(*ProviderError)
+	if !ok {
+		t.Fatalf("expected *ProviderError, got %T", err)
+	}
+	if pe.Code != ErrBadRequest {
+		t.Errorf("Code = %q, want %q", pe.Code, ErrBadRequest)
+	}
+}
+
+// Suppress unused import warning for httptest (used in TestRouterFailoverOn429).
+var _ = httptest.NewServer
+var _ = json.Marshal

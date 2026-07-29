@@ -16,6 +16,7 @@ type AppConfig struct {
 	Scheduling      SchedulingConfig      `toml:"scheduling"`
 	QuotaProtection QuotaProtectionConfig `toml:"quota_protection"`
 	HealthCheck     HealthCheckConfig     `toml:"health_check"`
+	Providers       []ProviderConfig      `toml:"providers"`
 }
 
 type ProxyConfig struct {
@@ -69,6 +70,15 @@ type HealthCheckConfig struct {
 	NotifyWebhook string `toml:"notify_webhook"`
 }
 
+// ProviderConfig defines one upstream provider in the multi-provider
+// gateway. When the Providers list is empty, the server defaults to
+// a single "google-cloud-code" provider (backward compatibility).
+type ProviderConfig struct {
+	ID      string `toml:"id"`
+	Type    string `toml:"type"`    // "google-cloud-code", "openai", "anthropic"
+	Enabled bool   `toml:"enabled"` // default true when omitted
+}
+
 func defaultProxy() ProxyConfig {
 	return ProxyConfig{
 		Port:        18045,
@@ -117,6 +127,15 @@ func defaultHealthCheck() HealthCheckConfig {
 	}
 }
 
+// DefaultProviders returns the default provider list: a single
+// google-cloud-code provider. This ensures backward compatibility
+// when no [[providers]] section is present in config.toml.
+func DefaultProviders() []ProviderConfig {
+	return []ProviderConfig{
+		{ID: "google-cloud-code", Type: "google-cloud-code", Enabled: true},
+	}
+}
+
 func Default() AppConfig {
 	return AppConfig{
 		Proxy:           defaultProxy(),
@@ -124,6 +143,7 @@ func Default() AppConfig {
 		Scheduling:      defaultScheduling(),
 		QuotaProtection: defaultQuotaProtection(),
 		HealthCheck:     defaultHealthCheck(),
+		Providers:       DefaultProviders(),
 	}
 }
 
@@ -166,6 +186,11 @@ func Load() (*AppConfig, error) {
 	cfg = Default()
 	if _, err := toml.DecodeFile(path, &cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
+	}
+	// Backward compatibility: if no providers are configured, default
+	// to a single google-cloud-code provider.
+	if len(cfg.Providers) == 0 {
+		cfg.Providers = DefaultProviders()
 	}
 	applyEnvOverrides(&cfg)
 	return &cfg, nil

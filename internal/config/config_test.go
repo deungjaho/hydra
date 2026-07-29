@@ -188,3 +188,29 @@ func TestApplyEnvOverrides_NoEnvKeepsDefaults(t *testing.T) {
 		t.Errorf("Mode = %v, want balance", cfg.Scheduling.Mode)
 	}
 }
+
+func TestDefaultProviders(t *testing.T) {
+	providers := DefaultProviders()
+	if len(providers) != 1 {
+		t.Fatalf("DefaultProviders returned %d, want 1", len(providers))
+	}
+	if providers[0].ID != "google-cloud-code" {
+		t.Errorf("ID = %q, want google-cloud-code", providers[0].ID)
+	}
+	if providers[0].Type != "google-cloud-code" {
+		t.Errorf("Type = %q, want google-cloud-code", providers[0].Type)
+	}
+	if !providers[0].Enabled {
+		t.Error("Enabled should be true")
+	}
+}
+
+func TestDefault_HasProviders(t *testing.T) {
+	cfg := Default()
+	if len(cfg.Providers) != 1 {
+		t.Fatalf("Default().Providers = %d, want 1", len(cfg.Providers))
+	}
+	if cfg.Providers[0].ID != "google-cloud-code" {
+		t.Errorf("Providers[0].ID = %q, want google-cloud-code", cfg.Providers[0].ID)
+	}
+}

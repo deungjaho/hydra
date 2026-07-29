@@ -17,6 +17,7 @@ import (
 
 	"github.com/deungjaho/hydra/internal/account"
 	"github.com/deungjaho/hydra/internal/config"
+	"github.com/deungjaho/hydra/internal/provider"
 )
 
 // ProxyServer is the HTTP server that exposes the OpenAI/Anthropic-compatible
@@ -27,6 +28,7 @@ type ProxyServer struct {
 	HTTP   *http.Client // uTLS client for Gemini upstream
 	OAuth  *http.Client // standard client for OAuth/quota (no uTLS)
 	Probe  *http.Client // short-timeout client for health check probes
+	Router *provider.Router // multi-provider router for provider selection
 }
 
 // NewProxyServer builds a ProxyServer with a uTLS-backed upstream client
@@ -36,12 +38,26 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 	if probeTimeout < 5*time.Second {
 		probeTimeout = 15 * time.Second
 	}
+
+	// Build providers from config. For Phase 1, only google-cloud-code
+	// is supported; other types are silently skipped (Phase 2 adds
+	// real OpenAI/Anthropic adapters).
+	var specs []configProviderSpec
+	for _, pc := range cfg.Providers {
+		specs = append(specs, configProviderSpec{
+			ID: pc.ID, Type: pc.Type, Enabled: pc.Enabled,
+		})
+	}
+	providers := buildProviders(specs)
+	router := provider.NewRouter(providers...)
+
 	return &ProxyServer{
 		Config: cfg,
 		State:  state,
 		HTTP:   NewUTLSClient(300*time.Second, cfg.Proxy.UpstreamProxy),
 		OAuth:  NewHTTPClient(60*time.Second, cfg.Proxy.UpstreamProxy),
 		Probe:  NewHTTPClient(probeTimeout, cfg.Proxy.UpstreamProxy),
+		Router: router,
 	}
 }
 
@@ -205,6 +221,31 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 	originalModel := strOr(openaiReq, "model", "gemini-2.5-flash")
 	mappedModel := MapModel(originalModel)
 	clientIP := clientIPFrom(r)
+
+	// Route to a provider via the multi-provider router. For Phase 1,
+	// only google-cloud-code is available, so this always selects it.
+	// When Phase 2 adds more providers, the Router will select between
+	// them based on model + capabilities.
+	_, rerr := s.Router.Route(r.Context(), &provider.Request{
+		Model:   originalModel,
+		Stream:  stream,
+		Format:  provider.FormatOpenAI,
+		RawBody: openaiReq,
+	})
+	if rerr != nil {
+		if pe, ok := rerr.(*provider.ProviderError); ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": map[string]any{
+					"type":    string(pe.Code),
+					"message": pe.Message,
+				},
+			})
+		} else {
+			http.Error(w, "no provider available: "+rerr.Error(),
+				http.StatusBadRequest)
+		}
+		return
+	}
 
 	accounts, err := account.ListAccounts(s.State.DB)
 	if err != nil {
@@ -459,6 +500,29 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 	originalModel := strOr(anthropicReq, "model", "gemini-2.5-flash")
 	mappedModel := MapModel(originalModel)
 	clientIP := clientIPFrom(r)
+
+	// Route to a provider via the multi-provider router. For Phase 1,
+	// only google-cloud-code is available, so this always selects it.
+	_, rerr := s.Router.Route(r.Context(), &provider.Request{
+		Model:   originalModel,
+		Stream:  stream,
+		Format:  provider.FormatAnthropic,
+		RawBody: anthropicReq,
+	})
+	if rerr != nil {
+		if pe, ok := rerr.(*provider.ProviderError); ok {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": map[string]any{
+					"type":    string(pe.Code),
+					"message": pe.Message,
+				},
+			})
+		} else {
+			http.Error(w, "no provider available: "+rerr.Error(),
+				http.StatusBadRequest)
+		}
+		return
+	}
 
 	accounts, err := account.ListAccounts(s.State.DB)
 	if err != nil {

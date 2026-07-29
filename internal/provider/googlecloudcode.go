@@ -6,20 +6,22 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-
-	"github.com/deungjaho/hydra/internal/proxy"
 )
 
 // GoogleCloudCodeProvider wraps the existing Google Cloud Code upstream
-// logic (internal/proxy package) behind the Provider interface.
+// logic behind the Provider interface.
 //
-// It calls existing exported functions — NO duplication, NO behavioral
-// change. The existing proxy package remains the source of truth for
-// request/response transformation and upstream communication.
+// It uses ProxyDeps (injected by the proxy package) for request/response
+// transformation and upstream communication. This breaks the circular
+// dependency between the proxy and provider packages.
 //
 // For the spike, the HTTP client is injectable so tests can simulate
 // upstream errors (e.g. 429) without real network calls.
 type GoogleCloudCodeProvider struct {
+	// Deps provides the proxy-level transformation and communication
+	// functions. Required for ChatCompletions; not needed for
+	// ResolveModel/AvailableModels if ModelMap is set.
+	Deps ProxyDeps
 	// HTTPClient is the upstream HTTP client (uTLS in production,
 	// mock transport in tests).
 	HTTPClient *http.Client
@@ -29,6 +31,9 @@ type GoogleCloudCodeProvider struct {
 	ProjectID string
 	// Caps is the static capability set for this provider.
 	Caps CapabilitySet
+	// ModelMap overrides Deps.MapModel when Deps is nil (for lightweight
+	// provider selection without full deps injection).
+	ModelMap map[string]string
 }
 
 func (g *GoogleCloudCodeProvider) ID() string          { return "google-cloud-code" }
@@ -47,31 +52,48 @@ type oauthBearerAuth struct {
 	token string
 }
 
-func (a *oauthBearerAuth) Type() AuthType                          { return AuthOAuthBearer }
-func (a *oauthBearerAuth) Apply(req *http.Request) error           { req.Header.Set("Authorization", "Bearer "+a.token); return nil }
-func (a *oauthBearerAuth) Refresh(ctx context.Context) error       { return nil }
-func (a *oauthBearerAuth) NeedsRefresh() bool                      { return false }
+func (a *oauthBearerAuth) Type() AuthType                    { return AuthOAuthBearer }
+func (a *oauthBearerAuth) Apply(req *http.Request) error     { req.Header.Set("Authorization", "Bearer "+a.token); return nil }
+func (a *oauthBearerAuth) Refresh(ctx context.Context) error { return nil }
+func (a *oauthBearerAuth) NeedsRefresh() bool                { return false }
 
 func (g *GoogleCloudCodeProvider) ResolveModel(clientModel string) (string, bool) {
-	mapped := proxy.MapModel(clientModel)
-	// Google Cloud Code can serve any model that MapModel resolves.
-	// In production, this would also check AvailableModels.
-	return mapped, mapped != ""
+	if g.Deps != nil {
+		mapped := g.Deps.MapModel(clientModel)
+		return mapped, mapped != ""
+	}
+	if g.ModelMap != nil {
+		if mapped, ok := g.ModelMap[clientModel]; ok {
+			return mapped, true
+		}
+	}
+	return "", false
 }
 
 func (g *GoogleCloudCodeProvider) AvailableModels(ctx context.Context) ([]string, error) {
-	return proxy.SupportedModels, nil
+	if g.Deps != nil {
+		return g.Deps.SupportedModels(), nil
+	}
+	return []string{}, nil
 }
 
 func (g *GoogleCloudCodeProvider) ChatCompletions(ctx context.Context, req *Request) (*Response, error) {
-	// Delegate to existing proxy functions — no duplication.
+	if g.Deps == nil {
+		return nil, &ProviderError{
+			Provider: g.ID(), Code: ErrBadRequest,
+			Message:   "ProxyDeps not configured",
+			Retryable: RetryNone,
+		}
+	}
+
+	// Delegate to injected proxy functions — no duplication.
 	var upstreamBody map[string]any
 	switch req.Format {
 	case FormatAnthropic:
-		upstreamBody = proxy.AnthropicTransformRequest(
+		upstreamBody = g.Deps.AnthropicTransformRequest(
 			req.RawBody, g.ProjectID, "spike-session", 1)
 	default:
-		upstreamBody = proxy.TransformRequest(
+		upstreamBody = g.Deps.TransformRequest(
 			req.RawBody, g.ProjectID, "spike-session", 1)
 	}
 
@@ -82,16 +104,16 @@ func (g *GoogleCloudCodeProvider) ChatCompletions(ctx context.Context, req *Requ
 	if err != nil {
 		return nil, &ProviderError{
 			Provider: g.ID(), Code: ErrBadRequest,
-			Message: "failed to marshal upstream body: " + err.Error(),
+			Message:   "failed to marshal upstream body: " + err.Error(),
 			Retryable: RetryNone,
 		}
 	}
 
-	resp, err := proxy.SendRequest(g.HTTPClient, g.AccessToken, g.ProjectID, bodyBytes, false)
+	resp, err := g.Deps.SendRequest(g.HTTPClient, g.AccessToken, g.ProjectID, bodyBytes, false)
 	if err != nil {
 		return nil, &ProviderError{
 			Provider: g.ID(), Code: ErrConnectFailure,
-			Message: "upstream request failed: " + err.Error(),
+			Message:   "upstream request failed: " + err.Error(),
 			Retryable: RetryImmediately,
 		}
 	}
@@ -106,7 +128,7 @@ func (g *GoogleCloudCodeProvider) ChatCompletions(ctx context.Context, req *Requ
 	if err != nil {
 		return nil, &ProviderError{
 			Provider: g.ID(), Code: ErrGateway,
-			Message: "read upstream body: " + err.Error(),
+			Message:   "read upstream body: " + err.Error(),
 			Retryable: RetryNone,
 		}
 	}
@@ -115,18 +137,18 @@ func (g *GoogleCloudCodeProvider) ChatCompletions(ctx context.Context, req *Requ
 	if err := json.Unmarshal(bodyBytes2, &geminiResp); err != nil {
 		return nil, &ProviderError{
 			Provider: g.ID(), Code: ErrGateway,
-			Message: fmt.Sprintf("invalid upstream JSON: %v", err),
+			Message:   fmt.Sprintf("invalid upstream JSON: %v", err),
 			Retryable: RetryNone,
 		}
 	}
 
-	// Transform to client format using existing functions.
+	// Transform to client format using injected functions.
 	var normalized map[string]any
 	switch req.Format {
 	case FormatAnthropic:
-		normalized = proxy.AnthropicTransformResponse(geminiResp, req.Model)
+		normalized = g.Deps.AnthropicTransformResponse(geminiResp, req.Model)
 	default:
-		normalized = proxy.TransformResponse(geminiResp, req.Model)
+		normalized = g.Deps.TransformResponse(geminiResp, req.Model)
 	}
 
 	return g.mapResponse(normalized, req.Model), nil
@@ -228,9 +250,8 @@ func toInt64Val(v any) int64 {
 
 func (g *GoogleCloudCodeProvider) StreamChatCompletions(ctx context.Context, req *Request) (Stream, error) {
 	// For the spike, streaming is not fully implemented — it would wrap
-	// proxy.AnthropicStreamState / the OpenAI SSE streaming logic.
-	// This is a stub that returns a not-implemented error. Full streaming
-	// wiring is post-spike.
+	// the SSE streaming logic. Full streaming wiring is post-spike
+	// (Phase 2 task 7).
 	return nil, &ProviderError{
 		Provider: g.ID(), Code: ErrBadRequest,
 		Message:   "streaming not implemented in spike",
