@@ -1,0 +1,64 @@
+Contributing to Hydra
+=====================
+
+
+Building
+--------
+
+    make build       outputs bin/hydra
+    make test        go test -count=1 ./...
+    make vet         go vet ./...
+    make fmt         gofmt + goimports
+
+
+Code style
+----------
+
+  * gofmt is mandatory.  Run `make fmt` before committing.
+  * Follow idiomatic Go: short names in local scope, descriptive
+    names in package scope, interfaces defined by consumers, errors
+    returned not thrown.
+  * Comments: godoc on exported symbols.  Internal functions get a
+    one-liner if the name doesn't tell the whole story.  Don't explain
+    "why" in the code -- put that in a commit message.
+  * No panic in library code.  No os.Exit outside cmd/hydra.
+  * Prefer pointer fields (*int64) over Has*bool pairs for optional
+    struct values.
+
+
+Commit messages
+---------------
+
+Subject line: imperative mood, lowercase, no period.
+
+    fix failover loop skipping healthy accounts
+
+    When all accounts had location errors, the retry logic reset the
+    tried map but didn't reset locationFailures, causing the next
+    iteration to skip the retry path entirely.
+
+Reference the issue if applicable.  Keep the body under 72 columns.
+
+
+Pull requests
+-------------
+
+  * One logical change per PR.
+  * Run `make test vet fmt-check` before pushing.
+  * If adding a new endpoint, add a test in *_test.go.
+  * If changing the config schema, update config.example.toml and the
+    README configuration section.
+
+
+Project structure
+-----------------
+
+    cmd/hydra/          entry point
+    internal/
+      account/          OAuth, account store, quota, request logging
+      app/              service layer (CLI/TUI -> store interfaces)
+      cli/              cobra commands, TUI, output rendering
+      config/           TOML config + env var overrides
+      db/               SQLite wrapper + migrations
+      proxy/            HTTP handlers, SSE streaming, failover, health
+    Makefile            build / install / test / vet / fmt

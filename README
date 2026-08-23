@@ -1,0 +1,161 @@
+Hydra
+=====
+
+A reverse proxy that exposes Google Antigravity (Gemini) models through
+OpenAI- and Anthropic-compatible APIs.  Bind multiple Google accounts,
+let Hydra handle OAuth refresh and quota-aware load balancing, then
+point any OpenAI/Anthropic-compatible client at it.
+
+Hydra 是一个反向代理，把 Google Antigravity (Gemini) 模型通过 OpenAI 和
+Anthropic 兼容 API 暴露出来。绑定多个 Google 账号，让 Hydra 处理 OAuth
+刷新和配额感知的负载均衡，然后把任何 OpenAI/Anthropic 兼容客户端指向它。
+
+
+Features
+--------
+
+  * OpenAI API: /v1/chat/completions, /v1/models, /responses
+  * Anthropic API: /v1/messages, /v1/messages/count_tokens
+  * Multi-account pooling with three scheduling modes:
+    cache, balance, performance
+  * Quota protection: auto-disables models at quota threshold,
+    re-enables on recovery
+  * API key management with per-key usage tracking,
+    rotate / enable / disable
+  * TUI dashboard: inspect accounts, logs, models, keys, and usage
+    in the terminal
+  * SQLite request logging with token breakdown
+  * Prometheus metrics at /metrics
+  * JSON mode, image and audio input via OpenAI content parts
+
+
+Install
+-------
+
+Homebrew (macOS):
+
+    brew tap deungjaho/hydra
+    brew install hydra
+
+AUR (Arch Linux):
+
+    yay -S hydra-proxy
+
+From source / 从源码编译:
+
+    make build
+    # or: go build ./cmd/hydra
+
+
+Quick start
+-----------
+
+  1. Bind a Google account (starts OAuth flow):
+
+       hydra accounts add
+
+  2. Start the proxy (auto-creates a default API key on first run):
+
+       hydra serve
+
+  3. Point a client at it:
+
+       curl http://127.0.0.1:18045/v1/chat/completions \
+         -H "Authorization: Bearer <your-api-key>" \
+         -H "Content-Type: application/json" \
+         -d '{"model":"gemini-3.6-flash-high","messages":[{"role":"user","content":"hi"}]}'
+
+  4. Open the TUI dashboard:
+
+       hydra
+
+
+Commands
+--------
+
+    hydra                      TUI dashboard
+    hydra serve                start the proxy server
+    hydra accounts add         bind a Google account via OAuth
+    hydra accounts list        list bound accounts
+    hydra key add <label>      create a new API key
+    hydra key list             list API keys and usage
+    hydra key rotate <id>      rotate an API key (old key invalidated)
+    hydra key show <id>        print the full key string
+    hydra quota                refresh quota from Google API
+    hydra usage [-w day|week|month|all]
+                               show usage statistics
+    hydra logs                 show recent request logs
+    hydra config               show or reset configuration
+    hydra version              print version
+
+
+Configuration
+-------------
+
+Config file: ~/.config/hydra/config.toml
+
+Environment variables override config file values:
+
+    HYDRA_PORT                 proxy.port                  default 18045
+    HYDRA_BIND                 proxy.bind                  default 127.0.0.1
+    HYDRA_UPSTREAM_PROXY       proxy.upstream_proxy        default none
+    HYDRA_LOG_REQUESTS         proxy.log_requests          default true
+    HYDRA_SCHEDULING_MODE      scheduling.mode             default balance
+    HYDRA_OAUTH_CLIENT_ID      --                          default Antigravity's
+    HYDRA_OAUTH_CLIENT_SECRET  --                          default Antigravity's
+
+Scheduling modes / 调度模式:
+
+    cache        each session sticks to one account (maximize cache hits)
+    balance      sticky + switch on quota/degradation
+    performance  power-of-two-choices random sampling
+
+See config.example.toml for a full example.
+
+
+TUI keybindings
+---------------
+
+    Tab / 1-5    switch tab
+    j / k        navigate up/down
+    Ctrl+d/u     scroll (Logs tab)
+    Space        expand log detail (Logs tab)
+    a            add key (Keys tab)
+    K            rotate key (Keys tab)
+    s            show full key (Keys tab)
+    D            delete row
+    e            enable/disable
+    r            refresh quota
+    w            switch time window (Status tab)
+    m            switch scheduling mode (Status tab)
+    q            quit
+
+
+OAuth credentials
+-----------------
+
+Hydra reuses the Antigravity desktop app's Google OAuth client ID and
+secret.  OAuth desktop clients are "public" client types where the
+secret is embedded in the client binary and is not truly confidential.
+
+If Google revokes the default client ID, point Hydra at your own
+Google OAuth desktop client via HYDRA_OAUTH_CLIENT_ID and
+HYDRA_OAUTH_CLIENT_SECRET.
+
+
+Development
+-----------
+
+    make build       build to bin/hydra
+    make test        go test -count=1 ./...
+    make vet         go vet ./...
+    make fmt         gofmt + goimports
+    make fmt-check   CI format check
+
+See CONTRIBUTING for guidelines.
+
+
+License
+-------
+
+MIT

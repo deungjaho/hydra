@@ -1,0 +1,25 @@
+# Binaries
+/bin/
+/hydra
+*.exe
+
+# Databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+:memory:
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local config (may contain secrets)
+*.env

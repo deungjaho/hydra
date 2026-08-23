@@ -1,0 +1,51 @@
+# Hydra configuration file.
+# Place at ~/.config/hydra/config.toml
+# All values are optional; defaults are shown below.
+
+[proxy]
+port = 18045
+bind = "127.0.0.1"
+log_requests = true
+# upstream_proxy = "http://127.0.0.1:7890"  # HTTP CONNECT proxy for upstream calls
+
+[server]
+log_capacity = 1000
+
+[scheduling]
+mode = "balance"          # cache | balance | performance
+sticky_sessions = true
+# max_concurrency_per_account = 0  # 0 = unlimited; e.g. 3 = max 3 in-flight per account
+# quota_warn_percentage = 20       # deprioritize accounts below this quota % in scheduling
+
+[quota_protection]
+enabled = true
+threshold_percentage = 5  # disable model when quota remaining drops below 5%
+# monitored_models = []   # empty = monitor all models
+
+[health_check]
+enabled = true
+interval_seconds = 300
+timeout_seconds = 15
+failure_threshold = 3
+# notify_webhook = "https://example.com/webhook"
+
+# API key providers (OpenAI-compatible, static API key auth).
+# Models routed to these providers bypass the Antigravity path.
+# [[api_providers]]
+# name = "deepseek"
+# base_url = "https://api.deepseek.com/v1"
+# api_key = "sk-..."
+
+# [[api_providers]]
+# name = "zhipu"
+# base_url = "https://open.bigmodel.cn/api/paas/v4"
+# api_key = "..."
+
+# Registered models in the unified catalog.
+# Models not listed here fall through to the Antigravity path.
+# [[models]]
+# id = "deepseek-chat"
+# provider = "deepseek"
+# display_name = "DeepSeek Chat"
+# context_window = 64000
+# max_output_tokens = 8192
