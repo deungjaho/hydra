@@ -148,8 +148,8 @@ type tuiModel struct {
 	statusMsg      string
 	statusTime     time.Time
 	width          int
-	height     int
-	quitting   bool
+	height         int
+	quitting       bool
 	// Inline input
 	inputMode inputMode
 	textInput textinput.Model

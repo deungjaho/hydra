@@ -316,10 +316,10 @@ type responsesStreamState struct {
 	seq     int64 // sequence number for events
 
 	// Item tracking
-	messageItemID string // current message item ID
+	messageItemID   string // current message item ID
 	reasoningItemID string // current reasoning item ID
-	outputIndex   int    // current output item index
-	contentIndex  int    // current content part index
+	outputIndex     int    // current output item index
+	contentIndex    int    // current content part index
 
 	// Block tracking — which type of content we're currently streaming
 	currentType string // "text", "reasoning", "function_call"
