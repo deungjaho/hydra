@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
 
-.PHONY: all build install uninstall test vet fmt fmt-check clean
+.PHONY: all build install uninstall test vet fmt fmt-check clean aur-srcinfo aur-verify
 
 all: build
 
@@ -40,3 +40,17 @@ fmt-check:
 
 clean:
 	rm -rf bin/
+
+# === AUR ===
+# 生成 .SRCINFO（需要在 Arch Linux 上执行，或 ssh omarchy）
+aur-srcinfo:
+	@echo "在 omarchy 上生成 .SRCINFO..."
+	scp aur/PKGBUILD omarchy:/tmp/hydra-pkgbuild-PKGBUILD
+	ssh omarchy 'mkdir -p /tmp/hydra-pkgbuild && cp /tmp/hydra-pkgbuild-PKGBUILD /tmp/hydra-pkgbuild/PKGBUILD && cd /tmp/hydra-pkgbuild && makepkg --printsrcinfo > .SRCINFO && cat .SRCINFO'
+	ssh omarchy 'cat /tmp/hydra-pkgbuild/.SRCINFO' > aur/.SRCINFO
+	@echo "✓ aur/.SRCINFO 生成完成"
+
+# 验证 AUR 上的版本
+aur-verify:
+	@curl -s "https://aur.archlinux.org/rpc/?v=5&type=info&arg=hydra-proxy" | \
+		python3 -c "import sys,json; d=json.load(sys.stdin); r=d['results'][0]; print('AUR version:', r['Version'])"
