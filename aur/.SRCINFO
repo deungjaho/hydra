@@ -11,6 +11,6 @@ pkgbase = hydra-proxy
 	conflicts = hydra
 	conflicts = hydra-git
 	source = hydra-proxy-0.8.0.tar.gz::https://github.com/deungjaho/hydra/archive/refs/tags/v0.8.0.tar.gz
-	sha256sums = SKIP
+	sha256sums = dc107e39ea2e28e4962009ccc18bbbd54bb745801b85b4f8a55f1d3e80914841
 
 pkgname = hydra-proxy

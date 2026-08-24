@@ -14,7 +14,7 @@ makedepends=('go')
 provides=('hydra')
 conflicts=('hydra' 'hydra-git')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/deungjaho/hydra/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=(SKIP)
+sha256sums=(dc107e39ea2e28e4962009ccc18bbbd54bb745801b85b4f8a55f1d3e80914841)
 
 build() {
     cd "${srcdir}/hydra-${pkgver}"
