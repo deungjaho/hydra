@@ -6,12 +6,16 @@ LDFLAGS := -s -w \
 	-X github.com/deungjaho/hydra/internal/cli.Version=$(VERSION) \
 	-X github.com/deungjaho/hydra/internal/cli.Commit=$(COMMIT)
 
-.PHONY: all build install uninstall test vet fmt clean
+# 交叉编译：make build GOOS=linux GOARCH=amd64
+GOOS ?= $(shell go env GOOS)
+GOARCH ?= $(shell go env GOARCH)
+
+.PHONY: all build install uninstall test vet fmt fmt-check clean
 
 all: build
 
 build:
-	go build -ldflags="$(LDFLAGS)" -o bin/hydra ./cmd/hydra
+	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags="$(LDFLAGS)" -o bin/hydra ./cmd/hydra
 
 install: build
 	install -d $(DESTDIR)$(BINDIR)
