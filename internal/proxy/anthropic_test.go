@@ -116,7 +116,7 @@ func TestAnthropicStreamStateNormal(t *testing.T) {
 	var all []string
 	all = append(all, s.ProcessChunk(map[string]any{
 		"usageMetadata": map[string]any{
-			"promptTokenCount":    float64(7),
+			"promptTokenCount":     float64(7),
 			"candidatesTokenCount": float64(3),
 		},
 		"candidates": []any{
@@ -203,8 +203,8 @@ func TestAnthropicStreamStateUsageOnly(t *testing.T) {
 	var all []string
 	all = append(all, s.ProcessChunk(map[string]any{
 		"usageMetadata": map[string]any{
-			"promptTokenCount":     float64(11),
-			"candidatesTokenCount": float64(0),
+			"promptTokenCount":        float64(11),
+			"candidatesTokenCount":    float64(0),
 			"cachedContentTokenCount": float64(4),
 		},
 		"candidates": []any{

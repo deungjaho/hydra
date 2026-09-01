@@ -143,8 +143,8 @@ func geminiGroundingResponse(text string, sources []map[string]any) map[string]a
 					},
 					"finishReason": "STOP",
 					"groundingMetadata": map[string]any{
-						"webSearchQueries":  []any{"test query"},
-						"groundingChunks":   chunks,
+						"webSearchQueries": []any{"test query"},
+						"groundingChunks":  chunks,
 					},
 				},
 			},
@@ -213,9 +213,9 @@ func TestMatrix_OpenAI_ReasoningEffort(t *testing.T) {
 
 func TestMatrix_OpenAI_ResponseFormat_JSONObject(t *testing.T) {
 	req := map[string]any{
-		"model":          "gpt-4",
+		"model":           "gpt-4",
 		"response_format": map[string]any{"type": "json_object"},
-		"messages":       []any{map[string]any{"role": "user", "content": "hi"}},
+		"messages":        []any{map[string]any{"role": "user", "content": "hi"}},
 	}
 	r := DecodeOpenAIChat(req)
 	if r.ResponseFormat == nil {
@@ -246,13 +246,13 @@ func TestMatrix_OpenAI_ResponseFormat_JSONSchema(t *testing.T) {
 
 func TestMatrix_OpenAI_PassthroughExtras(t *testing.T) {
 	req := map[string]any{
-		"model":                "gpt-4",
-		"parallel_tool_calls":  true,
-		"user":                 "user-123",
-		"metadata":             map[string]any{"session": "abc"},
-		"seed":                 float64(42),
-		"n":                    float64(3),
-		"messages":             []any{map[string]any{"role": "user", "content": "hi"}},
+		"model":               "gpt-4",
+		"parallel_tool_calls": true,
+		"user":                "user-123",
+		"metadata":            map[string]any{"session": "abc"},
+		"seed":                float64(42),
+		"n":                   float64(3),
+		"messages":            []any{map[string]any{"role": "user", "content": "hi"}},
 	}
 	r := DecodeOpenAIChat(req)
 	if r.Extra["parallel_tool_calls"] != true {
@@ -383,7 +383,7 @@ func TestMatrix_OpenAI_ToolNameRecoveryFromID(t *testing.T) {
 				"role": "assistant",
 				"tool_calls": []any{
 					map[string]any{
-						"id": "call_42",
+						"id":       "call_42",
 						"function": map[string]any{"name": "search", "arguments": "{}"},
 					},
 				},
@@ -559,14 +559,14 @@ func TestMatrix_OpenAI_Response_WebSearch(t *testing.T) {
 
 func TestMatrix_Anthropic_BasicFields(t *testing.T) {
 	req := map[string]any{
-		"model":      "claude-3",
-		"max_tokens": float64(4096),
-		"temperature": float64(0.5),
-		"top_p":      float64(0.95),
-		"top_k":      float64(40),
+		"model":          "claude-3",
+		"max_tokens":     float64(4096),
+		"temperature":    float64(0.5),
+		"top_p":          float64(0.95),
+		"top_k":          float64(40),
 		"stop_sequences": []any{"END"},
-		"stream":     true,
-		"system":     "You are helpful.",
+		"stream":         true,
+		"system":         "You are helpful.",
 		"messages": []any{
 			map[string]any{"role": "user", "content": "Hello"},
 		},
@@ -593,7 +593,7 @@ func TestMatrix_Anthropic_BasicFields(t *testing.T) {
 
 func TestMatrix_Anthropic_SystemAsArray(t *testing.T) {
 	req := map[string]any{
-		"model":     "claude-3",
+		"model":      "claude-3",
 		"max_tokens": float64(100),
 		"system": []any{
 			map[string]any{"type": "text", "text": "Part 1"},
@@ -926,9 +926,9 @@ func TestMatrix_Responses_BasicFields(t *testing.T) {
 
 func TestMatrix_Responses_ReasoningEffort(t *testing.T) {
 	req := map[string]any{
-		"model":    "o1",
+		"model":     "o1",
 		"reasoning": map[string]any{"effort": "high"},
-		"input":    "hi",
+		"input":     "hi",
 	}
 	r := DecodeResponses(req)
 	if r.Reasoning == nil {
@@ -1055,13 +1055,13 @@ func TestMatrix_Responses_ReasoningItem(t *testing.T) {
 
 func TestMatrix_Responses_PassthroughExtras(t *testing.T) {
 	req := map[string]any{
-		"model":    "o1",
-		"input":    "hi",
-		"store":    false,
-		"truncation": "disabled",
+		"model":                "o1",
+		"input":                "hi",
+		"store":                false,
+		"truncation":           "disabled",
 		"previous_response_id": "resp_123",
 		"parallel_tool_calls":  true,
-		"metadata":  map[string]any{"session": "abc"},
+		"metadata":             map[string]any{"session": "abc"},
 	}
 	r := DecodeResponses(req)
 	if r.Extra["store"] != false {
@@ -1233,9 +1233,9 @@ func TestMatrix_Gemini_GenerationConfig(t *testing.T) {
 
 func TestMatrix_Gemini_ThinkingConfig(t *testing.T) {
 	req := &Request{
-		Model: "gemini-2.5-flash",
+		Model:     "gemini-2.5-flash",
 		Reasoning: &Reasoning{Effort: "high", BudgetTokens: 8000},
-		Messages: []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
+		Messages:  []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
 	}
 	body := encodeGeminiBody(req)
 	genConfig, _ := body["generationConfig"].(map[string]any)
@@ -1251,9 +1251,9 @@ func TestMatrix_Gemini_ThinkingConfig(t *testing.T) {
 
 func TestMatrix_Gemini_ResponseFormat_JSON(t *testing.T) {
 	req := &Request{
-		Model: "gemini-2.5-flash",
+		Model:          "gemini-2.5-flash",
 		ResponseFormat: &ResponseFormat{Type: "json_object"},
-		Messages: []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
+		Messages:       []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
 	}
 	body := encodeGeminiBody(req)
 	genConfig, _ := body["generationConfig"].(map[string]any)
@@ -1283,7 +1283,7 @@ func TestMatrix_Gemini_ToolCallInMessage(t *testing.T) {
 		Model: "gemini-2.5-flash",
 		Messages: []Message{
 			{Role: "assistant", Content: []Content{{
-				Type: ContentToolCall,
+				Type:     ContentToolCall,
 				ToolCall: &ToolCall{ID: "call_1", Name: "search", Args: map[string]any{"q": "test"}},
 			}}},
 		},
@@ -1309,7 +1309,7 @@ func TestMatrix_Gemini_ToolResultInMessage(t *testing.T) {
 		Model: "gemini-2.5-flash",
 		Messages: []Message{
 			{Role: "tool", Content: []Content{{
-				Type: ContentToolResult,
+				Type:       ContentToolResult,
 				ToolResult: &ToolResult{ID: "call_1", Name: "search", Content: "results"},
 			}}},
 		},
@@ -1332,7 +1332,7 @@ func TestMatrix_Gemini_ToolResultError(t *testing.T) {
 		Model: "gemini-2.5-flash",
 		Messages: []Message{
 			{Role: "tool", Content: []Content{{
-				Type: ContentToolResult,
+				Type:       ContentToolResult,
 				ToolResult: &ToolResult{ID: "call_1", Name: "search", Content: "not found", IsError: true},
 			}}},
 		},
@@ -1397,8 +1397,8 @@ func TestMatrix_Gemini_ThinkingInMessage(t *testing.T) {
 
 func TestMatrix_Gemini_LocalShellTool(t *testing.T) {
 	req := &Request{
-		Model: "gemini-2.5-flash",
-		Tools: []Tool{{Kind: ToolLocalShell, Name: "local_shell", Description: "Run shell"}},
+		Model:    "gemini-2.5-flash",
+		Tools:    []Tool{{Kind: ToolLocalShell, Name: "local_shell", Description: "Run shell"}},
 		Messages: []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
 	}
 	body := encodeGeminiBody(req)
@@ -1509,10 +1509,10 @@ func TestMatrix_GeminiDecode_Usage(t *testing.T) {
 				},
 			},
 			"usageMetadata": map[string]any{
-				"promptTokenCount":         float64(100),
-				"candidatesTokenCount":     float64(50),
-				"cachedContentTokenCount":  float64(20),
-				"thoughtsTokenCount":       float64(10),
+				"promptTokenCount":        float64(100),
+				"candidatesTokenCount":    float64(50),
+				"cachedContentTokenCount": float64(20),
+				"thoughtsTokenCount":      float64(10),
 			},
 		},
 	}
@@ -1612,8 +1612,8 @@ func TestMatrix_CrossProtocol_AnthropicToOpenAI(t *testing.T) {
 func TestMatrix_CrossProtocol_ResponsesToOpenAI(t *testing.T) {
 	// Responses request → IR → OpenAI response
 	responsesReq := map[string]any{
-		"model":       "o1",
-		"input":       "Hello",
+		"model":        "o1",
+		"input":        "Hello",
 		"instructions": "Be helpful.",
 	}
 	irReq := DecodeResponses(responsesReq)
@@ -1740,7 +1740,7 @@ func TestMatrix_GeminiStream_Grounding(t *testing.T) {
 		"response": map[string]any{
 			"candidates": []any{
 				map[string]any{
-					"content": map[string]any{"parts": []any{map[string]any{"text": "Answer"}}},
+					"content":      map[string]any{"parts": []any{map[string]any{"text": "Answer"}}},
 					"finishReason": "STOP",
 					"groundingMetadata": map[string]any{
 						"groundingChunks": []any{
@@ -1795,7 +1795,7 @@ func TestMatrix_OpenAIStream_ThinkingDelta(t *testing.T) {
 
 func TestMatrix_OpenAIStream_ToolCallDelta(t *testing.T) {
 	ev := StreamEvent{
-		Type: StreamToolCallDelta,
+		Type:     StreamToolCallDelta,
 		ToolCall: &ToolCall{ID: "call_1", Name: "search", Args: map[string]any{"q": "test"}},
 	}
 	chunk := EncodeOpenAIChatStreamChunk(ev, "chatcmpl-1", 1000, "gpt-4", false)

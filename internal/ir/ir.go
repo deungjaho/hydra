@@ -123,7 +123,7 @@ type Thinking struct {
 // WebSearchResult represents the result of a server-side web search
 // (e.g. Gemini google_search grounding or Anthropic web_search_20250305).
 type WebSearchResult struct {
-	Query   string          // the search query (if known)
+	Query   string // the search query (if known)
 	Sources []WebSearchSource
 }
 

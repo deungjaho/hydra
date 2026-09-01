@@ -68,10 +68,10 @@ func (s *AnthropicStreamState) ensureMessageStart() string {
 			"stop_reason":   nil,
 			"stop_sequence": nil,
 			"usage": map[string]any{
-				"input_tokens":                  s.inputTokens,
-				"output_tokens":                 0,
-				"cache_creation_input_tokens":   0,
-				"cache_read_input_tokens":       s.cachedTokens,
+				"input_tokens":                s.inputTokens,
+				"output_tokens":               0,
+				"cache_creation_input_tokens": 0,
+				"cache_read_input_tokens":     s.cachedTokens,
 			},
 		},
 	})
