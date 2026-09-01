@@ -60,29 +60,41 @@ func DecodeOpenAIChat(req map[string]any) *Request {
 		r.ResponseFormat = &ResponseFormat{Type: rfType, Schema: schemaMap}
 	}
 
-	// Build tool_call_id → function_name map so that tool response
-	// messages (which often omit the function name in OpenAI format)
-	// can recover the name for Gemini's functionResponse.name field.
-	toolNameMap := buildOpenAIToolNameMap(req["messages"])
-
-	// Messages.
+	// Messages. We decode them in order so that tool response messages
+	// can recover the function name from the nearest preceding assistant
+	// tool_call with the same ID (rather than a global map that may be
+	// overwritten by duplicate IDs across turns).
+	var rawMsgs []map[string]any
 	if msgs, ok := req["messages"].([]any); ok {
 		for _, msgAny := range msgs {
 			msg, _ := msgAny.(map[string]any)
 			if msg == nil {
 				continue
 			}
-			m := decodeOpenAIMessage(msg, toolNameMap)
-			if m.Role == "system" || m.Role == "developer" {
-				if r.System == "" {
-					r.System = m.Content[0].Text
-				} else {
-					r.System += "\n" + m.Content[0].Text
-				}
-				continue
-			}
-			r.Messages = append(r.Messages, m)
+			rawMsgs = append(rawMsgs, msg)
 		}
+	}
+	toolNameMap := buildOpenAIToolNameMap(req["messages"])
+	for i, msg := range rawMsgs {
+		m := decodeOpenAIMessage(msg, toolNameMap)
+		// For tool responses, override the name with the nearest
+		// preceding assistant tool_call of the same ID. This fixes
+		// cases where duplicate tool_call IDs across turns cause the
+		// global map to return the wrong name.
+		if m.Role == "tool" && len(m.Content) > 0 && m.Content[0].ToolResult != nil {
+			if name := nearestToolCallName(rawMsgs, i, m.Content[0].ToolResult.ID); name != "" {
+				m.Content[0].ToolResult.Name = name
+			}
+		}
+		if m.Role == "system" || m.Role == "developer" {
+			if r.System == "" {
+				r.System = m.Content[0].Text
+			} else {
+				r.System += "\n" + m.Content[0].Text
+			}
+			continue
+		}
+		r.Messages = append(r.Messages, m)
 	}
 
 	// Tools.
@@ -146,6 +158,45 @@ func buildOpenAIToolNameMap(messagesAny any) map[string]string {
 		}
 	}
 	return m
+}
+
+// nearestToolCallName scans backward from targetMsg in rawMsgs to find
+// the nearest preceding assistant message whose tool_calls contain an
+// entry with the given id. It returns the function name for that entry,
+// or "" if not found. This is used to correctly pair tool responses with
+// their corresponding tool calls when duplicate IDs exist across turns.
+func nearestToolCallName(rawMsgs []map[string]any, targetIdx int, id string) string {
+	if id == "" || targetIdx < 0 {
+		return ""
+	}
+	// Scan backward for the nearest assistant message with a matching tool_call.
+	for i := targetIdx - 1; i >= 0; i-- {
+		msg := rawMsgs[i]
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			continue
+		}
+		toolCalls, ok := msg["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		for _, tcAny := range toolCalls {
+			tc, _ := tcAny.(map[string]any)
+			if tc == nil {
+				continue
+			}
+			tcID, _ := tc["id"].(string)
+			if tcID == id {
+				fn, _ := tc["function"].(map[string]any)
+				if fn != nil {
+					if name, _ := fn["name"].(string); name != "" {
+						return name
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // decodeOpenAIMessage converts an OpenAI message to IR.
@@ -366,6 +417,23 @@ func EncodeOpenAIChat(resp *Response) map[string]any {
 					"arguments": args,
 				},
 			})
+		case ContentWebSearch:
+			// OpenAI Chat Completions has no native web_search_tool_result
+			// block. Append sources as formatted text so the client still
+			// receives the grounded information.
+			if c.WebSearch != nil && len(c.WebSearch.Sources) > 0 {
+				if content != "" {
+					content += "\n\n"
+				}
+				content += "Web search results:"
+				for _, src := range c.WebSearch.Sources {
+					content += "\n- "
+					if src.Title != "" {
+						content += src.Title + ": "
+					}
+					content += src.URI
+				}
+			}
 		}
 	}
 
@@ -437,7 +505,7 @@ func EncodeOpenAIChatStreamChunk(ev StreamEvent, chatID string, created int64, m
 		delta["content"] = ev.Delta
 	case StreamThinkingDelta:
 		delta["reasoning_content"] = ev.Delta
-	case StreamToolCallDelta, StreamToolCallDone:
+	case StreamToolCallDelta:
 		if ev.ToolCall != nil {
 			args := ev.ToolCall.RawArgs
 			if args == "" {
@@ -447,14 +515,39 @@ func EncodeOpenAIChatStreamChunk(ev StreamEvent, chatID string, created int64, m
 					args = "{}"
 				}
 			}
+			idx := ev.ToolCall.Index
+			if idx < 0 {
+				idx = 0
+			}
 			delta["tool_calls"] = []any{
 				map[string]any{
-					"index": 0,
+					"index": idx,
 					"id":    ev.ToolCall.ID,
 					"type":  "function",
 					"function": map[string]any{
 						"name":      ev.ToolCall.Name,
 						"arguments": args,
+					},
+				},
+			}
+		}
+	case StreamToolCallDone:
+		// ToolCall args already emitted in StreamToolCallDelta; Done only
+		// signals completion. Emit an empty-args chunk so OpenAI clients
+		// see the tool call finish, but do NOT repeat the full arguments
+		// (would cause duplicate JSON when concatenated by the client).
+		if ev.ToolCall != nil {
+			idx := ev.ToolCall.Index
+			if idx < 0 {
+				idx = 0
+			}
+			delta["tool_calls"] = []any{
+				map[string]any{
+					"index": idx,
+					"id":    ev.ToolCall.ID,
+					"type":  "function",
+					"function": map[string]any{
+						"arguments": "",
 					},
 				},
 			}
@@ -476,6 +569,22 @@ func EncodeOpenAIChatStreamChunk(ev StreamEvent, chatID string, created int64, m
 		return sseData(chunk)
 	case StreamUsage:
 		return "" // OpenAI doesn't emit usage in stream chunks
+	case StreamWebSearch:
+		// OpenAI has no native web search result format; emit sources
+		// as a text delta so the client receives the grounded content.
+		if ev.WebSearch == nil || len(ev.WebSearch.Sources) == 0 {
+			return ""
+		}
+		var sb strings.Builder
+		sb.WriteString("\n\nWeb search results:")
+		for _, src := range ev.WebSearch.Sources {
+			sb.WriteString("\n- ")
+			if src.Title != "" {
+				sb.WriteString(src.Title + ": ")
+			}
+			sb.WriteString(src.URI)
+		}
+		delta["content"] = sb.String()
 	}
 
 	if len(delta) == 0 {

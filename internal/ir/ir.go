@@ -56,6 +56,7 @@ type Content struct {
 	ToolCall   *ToolCall
 	ToolResult *ToolResult
 	Thinking   *Thinking
+	WebSearch  *WebSearchResult
 }
 
 // ContentType enumerates all content variants.
@@ -68,6 +69,7 @@ const (
 	ContentAudio
 	ContentToolCall
 	ContentToolResult
+	ContentWebSearch
 )
 
 // Image is an inline or URL-referenced image.
@@ -94,6 +96,10 @@ type ToolCall struct {
 	// Signature preserves thinking signatures from protocols that
 	// use them (Anthropic thoughtSignature, AGY thoughtSignature).
 	Signature string
+	// Index is the positional index of this tool call within a single
+	// response turn, used by streaming protocols (OpenAI tool_calls)
+	// to associate delta chunks belonging to the same call. -1 = unset.
+	Index int
 }
 
 // ToolResult is the response from a tool invocation.
@@ -112,6 +118,20 @@ type Thinking struct {
 	Text      string
 	Signature string
 	Redacted  bool
+}
+
+// WebSearchResult represents the result of a server-side web search
+// (e.g. Gemini google_search grounding or Anthropic web_search_20250305).
+type WebSearchResult struct {
+	Query   string          // the search query (if known)
+	Sources []WebSearchSource
+}
+
+// WebSearchSource is a single search result entry.
+type WebSearchSource struct {
+	URI     string
+	Title   string
+	Snippet string
 }
 
 // Reasoning controls extended thinking behavior.
@@ -170,10 +190,11 @@ type Usage struct {
 // StreamEvent is one incremental event in a streaming response.
 type StreamEvent struct {
 	Type         StreamEventType
-	Delta        string    // text or thinking delta
-	ToolCall     *ToolCall // for tool_call events
-	Usage        *Usage    // for usage events (usually final chunk)
-	FinishReason string    // for done events
+	Delta        string           // text or thinking delta
+	ToolCall     *ToolCall        // for tool_call events
+	Usage        *Usage           // for usage events (usually final chunk)
+	FinishReason string           // for done events
+	WebSearch    *WebSearchResult // for web_search result events
 }
 
 // StreamEventType enumerates all streaming event variants.
@@ -186,4 +207,5 @@ const (
 	StreamToolCallDone
 	StreamUsage
 	StreamDone
+	StreamWebSearch
 )

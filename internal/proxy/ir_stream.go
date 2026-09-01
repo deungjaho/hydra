@@ -138,6 +138,17 @@ func (s *ProxyServer) streamAnthropicSSEIR(
 		}
 	}
 
+	// Finalize the Anthropic stream so terminal SSE events (message_delta +
+	// message_stop) are always emitted, even when the upstream Gemini stream
+	// ends without a chunk carrying finishReason. Finalize is a no-op if
+	// ProcessChunk already emitted the terminal events.
+	for _, out := range state.Finalize() {
+		_, _ = io.WriteString(w, out)
+	}
+	if flusher != nil {
+		flusher.Flush()
+	}
+
 	if totalPrompt != 0 || totalCompletion != 0 {
 		logErr(account.LogRequest(s.State.DB, account.LogRequestParams{
 			AccountID:        &accountID,

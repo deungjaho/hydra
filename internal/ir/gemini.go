@@ -56,6 +56,7 @@ func encodeGeminiBody(req *Request) map[string]any {
 		}
 	}
 	contents = mergeConsecutiveRoles(contents)
+	contents = ensureValidFirstTurn(contents)
 	if len(contents) > 0 {
 		body["contents"] = contents
 	}
@@ -111,15 +112,29 @@ func encodeGeminiBody(req *Request) map[string]any {
 
 	// Tools.
 	if len(req.Tools) > 0 {
-		funcDecls := make([]any, 0, len(req.Tools))
+		var funcDecls []any
+		var toolsList []any
 		for _, tool := range req.Tools {
+			if tool.Kind == ToolWebSearch {
+				// Gemini google_search is a server-side tool that
+				// executes the search and returns grounded results.
+				// It must be a separate entry in the tools array,
+				// not a functionDeclaration.
+				toolsList = append(toolsList, map[string]any{"google_search": map[string]any{}})
+				continue
+			}
 			funcDecls = append(funcDecls, encodeGeminiTool(tool))
 		}
-		body["tools"] = []any{
-			map[string]any{"functionDeclarations": funcDecls},
+		if len(funcDecls) > 0 {
+			toolsList = append(toolsList, map[string]any{"functionDeclarations": funcDecls})
 		}
-		body["toolConfig"] = map[string]any{
-			"functionCallingConfig": map[string]any{"mode": "AUTO"},
+		if len(toolsList) > 0 {
+			body["tools"] = toolsList
+		}
+		if len(funcDecls) > 0 {
+			body["toolConfig"] = map[string]any{
+				"functionCallingConfig": map[string]any{"mode": "AUTO"},
+			}
 		}
 	}
 
@@ -225,20 +240,16 @@ func encodeGeminiPart(c Content) map[string]any {
 		if result == "" {
 			result = "{}"
 		}
-		// Try to parse as JSON object; fallback to wrapping in result field.
-		var parsed any
-		if json.Unmarshal([]byte(result), &parsed) == nil {
-			// Already a JSON object.
-		} else {
-			parsed = map[string]any{"result": result}
+		// Keep tool output as text. Some upstream function-response
+		// validators interpret JSON keys such as "$ref" as metadata.
+		respObj := map[string]any{"output": result}
+		if c.ToolResult.IsError {
+			respObj = map[string]any{"error": result}
 		}
 		resp := map[string]any{
 			"name":     c.ToolResult.Name,
-			"response": parsed,
+			"response": respObj,
 			"id":       c.ToolResult.ID,
-		}
-		if c.ToolResult.IsError {
-			resp["error"] = true
 		}
 		part := map[string]any{"functionResponse": resp}
 		sig := c.ToolResult.Signature
@@ -427,6 +438,16 @@ func DecodeGeminiResponse(geminiResp map[string]any, model string) *Response {
 			if fr, ok := candidate["finishReason"].(string); ok {
 				resp.FinishReason = mapGeminiFinishReason(fr)
 			}
+
+			// Extract grounding metadata from google_search tool.
+			if gm, ok := candidate["groundingMetadata"].(map[string]any); ok {
+				if wsr := decodeGroundingMetadata(gm); wsr != nil && len(wsr.Sources) > 0 {
+					resp.Content = append(resp.Content, Content{
+						Type:      ContentWebSearch,
+						WebSearch: wsr,
+					})
+				}
+			}
 		}
 	}
 
@@ -471,13 +492,31 @@ func decodeGeminiPart(part map[string]any) Content {
 	if fr, ok := part["functionResponse"].(map[string]any); ok {
 		name, _ := fr["name"].(string)
 		id, _ := fr["id"].(string)
-		isError, _ := fr["error"].(bool)
+		legacyErr, _ := fr["error"].(bool)
 		sig, _ := part["thoughtSignature"].(string)
 		var contentStr string
+		// The official Gemini FunctionResponse convention uses
+		// response.error (key presence with a non-null value) to
+		// signal an error. The legacy top-level functionResponse.error
+		// bool is kept for backward compatibility with older
+		// Hydra-encoded data; it is only consulted when the official
+		// nested response.error marker is absent.
+		// See: https://ai.google.dev/gemini-api/docs/function-calling
+		isError := false
+		nestedPresent := false
 		if resp, ok := fr["response"]; ok {
 			if b, err := json.Marshal(resp); err == nil {
 				contentStr = string(b)
 			}
+			if respObj, ok := resp.(map[string]any); ok {
+				if v, ok := respObj["error"]; ok && v != nil {
+					nestedPresent = true
+					isError = true
+				}
+			}
+		}
+		if !nestedPresent {
+			isError = legacyErr
 		}
 		return Content{
 			Type: ContentToolResult,
@@ -518,6 +557,89 @@ func decodeGeminiUsage(inner map[string]any) Usage {
 		Cached:     int64FromAny(usage["cachedContentTokenCount"]),
 		Thought:    int64FromAny(usage["thoughtsTokenCount"]),
 	}
+}
+
+// decodeGroundingMetadata converts Gemini google_search grounding
+// metadata into an IR WebSearchResult.
+func decodeGroundingMetadata(gm map[string]any) *WebSearchResult {
+	wsr := &WebSearchResult{}
+
+	// Extract search queries.
+	if queries, ok := gm["webSearchQueries"].([]any); ok {
+		for _, q := range queries {
+			if s, ok := q.(string); ok && s != "" {
+				wsr.Query = s
+				break
+			}
+		}
+	}
+
+	// Extract grounding chunks (web sources).
+	chunks, _ := gm["groundingChunks"].([]any)
+	seen := map[string]bool{}
+	for _, chunkAny := range chunks {
+		chunk, _ := chunkAny.(map[string]any)
+		if chunk == nil {
+			continue
+		}
+		web, _ := chunk["web"].(map[string]any)
+		if web == nil {
+			continue
+		}
+		uri, _ := web["uri"].(string)
+		if uri == "" || seen[uri] {
+			continue
+		}
+		seen[uri] = true
+		title, _ := web["title"].(string)
+		wsr.Sources = append(wsr.Sources, WebSearchSource{
+			URI:   uri,
+			Title: title,
+		})
+	}
+
+	// Extract grounding supports for snippet text.
+	supports, _ := gm["groundingSupports"].([]any)
+	snippetByURI := map[string]string{}
+	for _, supAny := range supports {
+		sup, _ := supAny.(map[string]any)
+		if sup == nil {
+			continue
+		}
+		segment, _ := sup["segment"].(map[string]any)
+		if segment == nil {
+			continue
+		}
+		segText, _ := segment["text"].(string)
+		indices, _ := sup["groundingChunkIndices"].([]any)
+		for _, idxAny := range indices {
+			idx, ok := idxAny.(float64)
+			if !ok || int(idx) >= len(chunks) {
+				continue
+			}
+			chunk, _ := chunks[int(idx)].(map[string]any)
+			if chunk == nil {
+				continue
+			}
+			web, _ := chunk["web"].(map[string]any)
+			if web == nil {
+				continue
+			}
+			uri, _ := web["uri"].(string)
+			if uri != "" && segText != "" {
+				if _, exists := snippetByURI[uri]; !exists {
+					snippetByURI[uri] = segText
+				}
+			}
+		}
+	}
+	for i := range wsr.Sources {
+		if snip, ok := snippetByURI[wsr.Sources[i].URI]; ok {
+			wsr.Sources[i].Snippet = snip
+		}
+	}
+
+	return wsr
 }
 
 // extractInnerResponse unwraps the AGY envelope to get the inner response.
@@ -586,12 +708,17 @@ func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
 			contentMap, _ := candidate["content"].(map[string]any)
 			if contentMap != nil {
 				parts, _ := contentMap["parts"].([]any)
+				toolCallIdx := 0
 				for _, partAny := range parts {
 					part, _ := partAny.(map[string]any)
 					if part == nil {
 						continue
 					}
-					events = append(events, decodeGeminiPartToStream(part)...)
+					evs := decodeGeminiPartToStream(part, toolCallIdx)
+					if _, ok := part["functionCall"].(map[string]any); ok {
+						toolCallIdx++
+					}
+					events = append(events, evs...)
 				}
 			}
 			if fr, ok := candidate["finishReason"].(string); ok && fr != "" {
@@ -600,6 +727,16 @@ func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
 					FinishReason: mapGeminiFinishReason(fr),
 				})
 			}
+
+			// Extract grounding metadata from google_search tool.
+			if gm, ok := candidate["groundingMetadata"].(map[string]any); ok {
+				if wsr := decodeGroundingMetadata(gm); wsr != nil && len(wsr.Sources) > 0 {
+					events = append(events, StreamEvent{
+						Type:      StreamWebSearch,
+						WebSearch: wsr,
+					})
+				}
+			}
 		}
 	}
 
@@ -607,7 +744,9 @@ func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
 }
 
 // decodeGeminiPartToStream converts a Gemini part to stream events.
-func decodeGeminiPartToStream(part map[string]any) []StreamEvent {
+// toolCallIdx tracks the positional index of tool calls within a single
+// chunk so that multiple parallel tool calls get distinct OpenAI indices.
+func decodeGeminiPartToStream(part map[string]any, toolCallIdx int) []StreamEvent {
 	// Thought text.
 	if t, ok := part["text"].(string); ok {
 		if thought, _ := part["thought"].(bool); thought {
@@ -622,7 +761,7 @@ func decodeGeminiPartToStream(part map[string]any) []StreamEvent {
 		id, _ := fc["id"].(string)
 		args, _ := fc["args"].(map[string]any)
 		sig, _ := part["thoughtSignature"].(string)
-		tc := &ToolCall{ID: id, Name: name, Args: args, Signature: sig}
+		tc := &ToolCall{ID: id, Name: name, Args: args, Signature: sig, Index: toolCallIdx}
 		return []StreamEvent{
 			{Type: StreamToolCallDelta, ToolCall: tc},
 			{Type: StreamToolCallDone, ToolCall: tc},
@@ -659,4 +798,32 @@ func mergeConsecutiveRoles(contents []any) []any {
 		out = append(out, map[string]any{"role": role, "parts": parts})
 	}
 	return out
+}
+
+// ensureValidFirstTurn guarantees that the first content entry is a
+// user turn. Gemini requires functionCall (model turn) to come after a
+// user turn or functionResponse turn. If the client's history was
+// truncated and the first message is a model turn containing a
+// functionCall, Gemini returns 400 "Please ensure that function call
+// turn comes immediately after a user turn or after a function
+// response turn." We fix this by prepending a minimal user turn so
+// the model turn is no longer first.
+func ensureValidFirstTurn(contents []any) []any {
+	if len(contents) == 0 {
+		return contents
+	}
+	first, _ := contents[0].(map[string]any)
+	if first == nil {
+		return contents
+	}
+	role, _ := first["role"].(string)
+	if role == "user" {
+		return contents
+	}
+	// Prepend a minimal user turn to satisfy Gemini's ordering rule.
+	pad := map[string]any{
+		"role":  "user",
+		"parts": []any{map[string]any{"text": ""}},
+	}
+	return append([]any{pad}, contents...)
 }

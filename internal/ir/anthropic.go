@@ -346,6 +346,27 @@ func EncodeAnthropic(resp *Response) map[string]any {
 				"input": input,
 			}
 			blocks = append(blocks, block)
+		case ContentWebSearch:
+			if c.WebSearch != nil && len(c.WebSearch.Sources) > 0 {
+				results := make([]any, 0, len(c.WebSearch.Sources))
+				for _, src := range c.WebSearch.Sources {
+					entry := map[string]any{
+						"type": "web_search_result",
+						"url":  src.URI,
+					}
+					if src.Title != "" {
+						entry["title"] = src.Title
+					}
+					if src.Snippet != "" {
+						entry["snippet"] = src.Snippet
+					}
+					results = append(results, entry)
+				}
+				blocks = append(blocks, map[string]any{
+					"type":    "web_search_tool_result",
+					"content": results,
+				})
+			}
 		}
 	}
 
@@ -525,6 +546,46 @@ func EncodeAnthropicStreamEvents(events []StreamEvent, respID, model string) []s
 					"delta": map[string]any{"type": "input_json_delta", "partial_json": argsJSON},
 				}))
 			}
+			out = append(out, sseEvent("content_block_stop", map[string]any{
+				"type":  "content_block_stop",
+				"index": blockIdx,
+			}))
+			currentBlockType = ""
+
+		case StreamWebSearch:
+			if ev.WebSearch == nil || len(ev.WebSearch.Sources) == 0 {
+				break
+			}
+			if currentBlockType != "" {
+				out = append(out, sseEvent("content_block_stop", map[string]any{
+					"type":  "content_block_stop",
+					"index": blockIdx,
+				}))
+			}
+			blockIdx++
+			currentBlockType = "web_search_tool_result"
+			results := make([]any, 0, len(ev.WebSearch.Sources))
+			for _, src := range ev.WebSearch.Sources {
+				entry := map[string]any{
+					"type": "web_search_result",
+					"url":  src.URI,
+				}
+				if src.Title != "" {
+					entry["title"] = src.Title
+				}
+				if src.Snippet != "" {
+					entry["snippet"] = src.Snippet
+				}
+				results = append(results, entry)
+			}
+			out = append(out, sseEvent("content_block_start", map[string]any{
+				"type":  "content_block_start",
+				"index": blockIdx,
+				"content_block": map[string]any{
+					"type":    "web_search_tool_result",
+					"content": results,
+				},
+			}))
 			out = append(out, sseEvent("content_block_stop", map[string]any{
 				"type":  "content_block_stop",
 				"index": blockIdx,

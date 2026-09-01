@@ -23,6 +23,7 @@ type AnthropicStreamState struct {
 	blockIndex      int
 	currentBlock    *anthropicBlockType
 	messageStartSet bool
+	stopped         bool
 	usedTool        bool
 	inputTokens     int64
 	outputTokens    int64
@@ -67,8 +68,10 @@ func (s *AnthropicStreamState) ensureMessageStart() string {
 			"stop_reason":   nil,
 			"stop_sequence": nil,
 			"usage": map[string]any{
-				"input_tokens":  s.inputTokens,
-				"output_tokens": 0,
+				"input_tokens":                  s.inputTokens,
+				"output_tokens":                 0,
+				"cache_creation_input_tokens":   0,
+				"cache_read_input_tokens":       s.cachedTokens,
 			},
 		},
 	})
@@ -108,10 +111,11 @@ func (s *AnthropicStreamState) endBlock() string {
 func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 	var out []string
 
-	if msg := s.ensureMessageStart(); msg != "" {
-		out = append(out, msg)
-	}
-
+	// Parse usageMetadata before emitting message_start so that the
+	// prompt-side usage (input_tokens, cache_read_input_tokens) is
+	// reflected in the message_start event, matching Anthropic's
+	// canonical streaming format where message_start carries the full
+	// prompt-side token counts.
 	if usage, ok := inner["usageMetadata"].(map[string]any); ok {
 		if v := int64Or(usage, "promptTokenCount", 0); v != 0 {
 			s.inputTokens = v
@@ -122,6 +126,10 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 		if v := int64Or(usage, "cachedContentTokenCount", 0); v != 0 {
 			s.cachedTokens = v
 		}
+	}
+
+	if msg := s.ensureMessageStart(); msg != "" {
+		out = append(out, msg)
 	}
 
 	candidates, _ := inner["candidates"].([]any)
@@ -215,13 +223,47 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 			"type":  "message_delta",
 			"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
 			"usage": map[string]any{
-				"input_tokens":  s.inputTokens,
-				"output_tokens": s.outputTokens,
+				"input_tokens":                s.inputTokens,
+				"output_tokens":               s.outputTokens,
+				"cache_creation_input_tokens": 0,
+				"cache_read_input_tokens":     s.cachedTokens,
 			},
 		}))
 		out = append(out, s.sse("message_stop", map[string]any{"type": "message_stop"}))
+		s.stopped = true
 	}
 
+	return out
+}
+
+// Finalize emits terminal Anthropic SSE events when the upstream stream ends
+// without a finishReason. Per the Anthropic SSE protocol, every stream must
+// terminate with message_delta + message_stop. If ProcessChunk already emitted
+// them (finishReason was set on the last chunk), Finalize is a no-op.
+func (s *AnthropicStreamState) Finalize() []string {
+	if s.stopped {
+		return nil
+	}
+	var out []string
+	if s.currentBlock != nil {
+		out = append(out, s.endBlock())
+	}
+	stopReason := "end_turn"
+	if s.usedTool {
+		stopReason = "tool_use"
+	}
+	out = append(out, s.sse("message_delta", map[string]any{
+		"type":  "message_delta",
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+		"usage": map[string]any{
+			"input_tokens":                s.inputTokens,
+			"output_tokens":               s.outputTokens,
+			"cache_creation_input_tokens": 0,
+			"cache_read_input_tokens":     s.cachedTokens,
+		},
+	}))
+	out = append(out, s.sse("message_stop", map[string]any{"type": "message_stop"}))
+	s.stopped = true
 	return out
 }
 

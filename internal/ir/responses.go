@@ -8,6 +8,7 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // DecodeResponses transforms an OpenAI Responses API request into IR.
@@ -451,6 +452,34 @@ func EncodeResponses(resp *Response) map[string]any {
 				}
 			}
 			output = append(output, item)
+
+		case ContentWebSearch:
+			// Responses API has web_search_call item type; emit sources
+			// as a message with the grounded content since we can't
+			// reconstruct the full web_search_call lifecycle.
+			if c.WebSearch != nil && len(c.WebSearch.Sources) > 0 {
+				var sb strings.Builder
+				for _, src := range c.WebSearch.Sources {
+					sb.WriteString("- ")
+					if src.Title != "" {
+						sb.WriteString(src.Title + ": ")
+					}
+					sb.WriteString(src.URI + "\n")
+				}
+				output = append(output, map[string]any{
+					"id":     "msg_" + compactUUID(),
+					"type":   "message",
+					"status": "completed",
+					"role":   "assistant",
+					"content": []any{
+						map[string]any{
+							"type":        "output_text",
+							"text":        "Web search results:\n" + sb.String(),
+							"annotations": []any{},
+						},
+					},
+				})
+			}
 		}
 	}
 
@@ -646,6 +675,47 @@ func EncodeResponsesStreamEvents(events []StreamEvent, respID, model string, cre
 				"sequence_number": nextSeq(),
 				"output_index":    1,
 				"item":            item,
+			}))
+
+		case StreamWebSearch:
+			if ev.WebSearch == nil || len(ev.WebSearch.Sources) == 0 {
+				break
+			}
+			// Emit as text delta in the current message (if open) or
+			// a new message item.
+			if !messageStarted {
+				out = append(out, sseResponsesEvent("response.output_item.added", map[string]any{
+					"type":            "response.output_item.added",
+					"sequence_number": nextSeq(),
+					"output_index":    0,
+					"item":            map[string]any{"type": "message", "id": "msg_" + respID, "status": "in_progress", "role": "assistant", "content": []any{}},
+				}))
+				out = append(out, sseResponsesEvent("response.content_part.added", map[string]any{
+					"type":            "response.content_part.added",
+					"sequence_number": nextSeq(),
+					"item_id":         "msg_" + respID,
+					"output_index":    0,
+					"content_index":   0,
+					"part":            map[string]any{"type": "output_text", "text": ""},
+				}))
+				messageStarted = true
+			}
+			var sb strings.Builder
+			sb.WriteString("\n\nWeb search results:\n")
+			for _, src := range ev.WebSearch.Sources {
+				sb.WriteString("- ")
+				if src.Title != "" {
+					sb.WriteString(src.Title + ": ")
+				}
+				sb.WriteString(src.URI + "\n")
+			}
+			out = append(out, sseResponsesEvent("response.output_text.delta", map[string]any{
+				"type":            "response.output_text.delta",
+				"sequence_number": nextSeq(),
+				"item_id":         "msg_" + respID,
+				"output_index":    0,
+				"content_index":   0,
+				"delta":           sb.String(),
 			}))
 
 		case StreamDone:

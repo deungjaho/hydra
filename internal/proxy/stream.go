@@ -71,6 +71,13 @@ func (s *ProxyServer) streamResponsesSSE(
 		_, _ = io.WriteString(w, st.createdEvent())
 	}
 	if !st.completedSent {
+		// Close any open reasoning item with proper lifecycle events.
+		if st.reasoningAdded {
+			_, _ = io.WriteString(w, st.reasoningSummaryTextDoneEvent())
+			_, _ = io.WriteString(w, st.reasoningSummaryPartDoneEvent())
+			_, _ = io.WriteString(w, st.reasoningItemDoneEvent())
+			st.reasoningAdded = false
+		}
 		// Close any open message item with proper lifecycle events.
 		if st.messageAdded {
 			_, _ = io.WriteString(w, st.outputTextDoneEvent())

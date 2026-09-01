@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -201,28 +202,212 @@ func TestEncodeGeminiRequest_ToolCall(t *testing.T) {
 	env := EncodeGeminiRequest(r, "proj", "sess", 1)
 	body, _ := env["request"].(map[string]any)
 	contents, _ := body["contents"].([]any)
-	if len(contents) != 2 {
+	// ensureValidFirstTurn prepends a user turn when the first message
+	// is a model turn, so contents = [user(pad), model(fc), user(fr)].
+	if len(contents) != 3 {
 		t.Fatalf("contents = %d", len(contents))
 	}
-	// First content: model role with functionCall
+	// First content: padded user turn
 	c0, _ := contents[0].(map[string]any)
-	if c0["role"] != "model" {
-		t.Errorf("c0 role = %v, want model", c0["role"])
+	if c0["role"] != "user" {
+		t.Errorf("c0 role = %v, want user (pad)", c0["role"])
 	}
-	parts0, _ := c0["parts"].([]any)
-	fc, _ := parts0[0].(map[string]any)["functionCall"].(map[string]any)
+	// Second content: model role with functionCall
+	c1, _ := contents[1].(map[string]any)
+	if c1["role"] != "model" {
+		t.Errorf("c1 role = %v, want model", c1["role"])
+	}
+	parts1, _ := c1["parts"].([]any)
+	fc, _ := parts1[0].(map[string]any)["functionCall"].(map[string]any)
 	if fc["name"] != "get_weather" {
 		t.Errorf("functionCall name = %v", fc["name"])
 	}
-	// Second content: user role with functionResponse
-	c1, _ := contents[1].(map[string]any)
-	if c1["role"] != "user" {
-		t.Errorf("c1 role = %v, want user", c1["role"])
+	// Third content: user role with functionResponse
+	c2, _ := contents[2].(map[string]any)
+	if c2["role"] != "user" {
+		t.Errorf("c2 role = %v, want user", c2["role"])
 	}
-	parts1, _ := c1["parts"].([]any)
-	fr, _ := parts1[0].(map[string]any)["functionResponse"].(map[string]any)
+	parts2, _ := c2["parts"].([]any)
+	fr, _ := parts2[0].(map[string]any)["functionResponse"].(map[string]any)
 	if fr["name"] != "get_weather" {
 		t.Errorf("functionResponse name = %v", fr["name"])
+	}
+}
+
+// TestDecodeOpenAIChat_DuplicateToolCallIDs verifies that tool responses
+// with duplicate tool_call IDs across turns are paired with the nearest
+// preceding assistant tool_call, not the last one globally. Gemini
+// requires functionResponse.name to match the corresponding functionCall.
+func TestDecodeOpenAIChat_DuplicateToolCallIDs(t *testing.T) {
+	req := map[string]any{
+		"model": "gemini-3.7-flash-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "search sqlite"},
+			map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "web_search",
+							"arguments": `{"queries":["sqlite"]}`,
+						},
+					},
+				},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "result"},
+			map[string]any{"role": "assistant", "content": "sqlite is a database"},
+			map[string]any{"role": "user", "content": "list workspace"},
+			map[string]any{
+				"role": "assistant",
+				"tool_calls": []any{
+					map[string]any{
+						"id":   "call_1",
+						"type": "function",
+						"function": map[string]any{
+							"name":      "workspace_list",
+							"arguments": `{}`,
+						},
+					},
+				},
+			},
+			map[string]any{"role": "tool", "tool_call_id": "call_1", "content": "file1.txt"},
+		},
+	}
+	r := DecodeOpenAIChat(req)
+	// Find the two tool results.
+	var toolResults []*ToolResult
+	for i := range r.Messages {
+		if r.Messages[i].Role == "tool" && len(r.Messages[i].Content) > 0 {
+			if tr := r.Messages[i].Content[0].ToolResult; tr != nil {
+				toolResults = append(toolResults, tr)
+			}
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(toolResults))
+	}
+	if toolResults[0].Name != "web_search" {
+		t.Errorf("first tool result name = %q, want web_search", toolResults[0].Name)
+	}
+	if toolResults[1].Name != "workspace_list" {
+		t.Errorf("second tool result name = %q, want workspace_list", toolResults[1].Name)
+	}
+}
+
+func TestEncodeGeminiRequest_ToolResultError(t *testing.T) {
+	r := &Request{
+		Model: "gemini-3-pro",
+		Messages: []Message{
+			{
+				Role: "tool",
+				Content: []Content{{
+					Type: ContentToolResult,
+					ToolResult: &ToolResult{
+						ID:      "call_1",
+						Name:    "get_weather",
+						Content: "boom",
+						IsError: true,
+					},
+				}},
+			},
+		},
+	}
+	env := EncodeGeminiRequest(r, "proj", "sess", 1)
+	body, _ := env["request"].(map[string]any)
+	contents, _ := body["contents"].([]any)
+	if len(contents) != 1 {
+		t.Fatalf("contents = %d", len(contents))
+	}
+	c0, _ := contents[0].(map[string]any)
+	parts, _ := c0["parts"].([]any)
+	fr, _ := parts[0].(map[string]any)["functionResponse"].(map[string]any)
+	resp, _ := fr["response"].(map[string]any)
+	if resp == nil {
+		t.Fatalf("functionResponse.response is missing or not an object: %v", fr["response"])
+	}
+	// Error marker must be nested inside functionResponse.response, not at the
+	// top level of functionResponse.
+	if _, ok := resp["error"]; !ok {
+		t.Errorf("functionResponse.response.error = missing, want present")
+	}
+	if _, present := fr["error"]; present {
+		t.Errorf("functionResponse.error should not be set at top level; got %v", fr["error"])
+	}
+}
+
+func encodeGeminiToolResultResponse(t *testing.T, content string, isError bool) map[string]any {
+	t.Helper()
+	r := &Request{
+		Model: "gemini-3-pro",
+		Messages: []Message{{
+			Role: "tool",
+			Content: []Content{{
+				Type: ContentToolResult,
+				ToolResult: &ToolResult{
+					ID:      "call_1",
+					Name:    "run",
+					Content: content,
+					IsError: isError,
+				},
+			}},
+		}},
+	}
+	env := EncodeGeminiRequest(r, "proj", "sess", 1)
+	body := env["request"].(map[string]any)
+	contents := body["contents"].([]any)
+	parts := contents[0].(map[string]any)["parts"].([]any)
+	fr := parts[0].(map[string]any)["functionResponse"].(map[string]any)
+	return fr["response"].(map[string]any)
+}
+
+func TestEncodeGeminiRequest_ToolResultKeepsReservedJSONAsText(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		isError bool
+		key     string
+	}{
+		{
+			name:    "nested ref",
+			content: `{"score":{"$ref":"http://sports.core.api.espn.pvt/v2/scores/38?lang=en&region=us","value":2}}`,
+			key:     "output",
+		},
+		{
+			name:    "response error text",
+			content: `{"error":"command returned a literal error field","$schema":"opaque"}`,
+			key:     "output",
+		},
+		{
+			name:    "error result",
+			content: `{"$ref":"http://example.invalid/ref","parts":[{"display_name":"opaque"}]}`,
+			isError: true,
+			key:     "error",
+		},
+		{
+			name:    "array result",
+			content: `["ok",{"$id":"opaque"}]`,
+			key:     "output",
+		},
+		{
+			name:    "plain text",
+			content: "command completed",
+			key:     "output",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := encodeGeminiToolResultResponse(t, tt.content, tt.isError)
+			if len(resp) != 1 {
+				t.Fatalf("response keys = %v, want only %q", resp, tt.key)
+			}
+			got, ok := resp[tt.key].(string)
+			if !ok || got != tt.content {
+				t.Fatalf("response[%q] = %#v, want original text", tt.key, resp[tt.key])
+			}
+		})
 	}
 }
 
@@ -341,6 +526,166 @@ func TestDecodeGeminiResponse_Thinking(t *testing.T) {
 	}
 	if resp.Content[1].Type != ContentText || resp.Content[1].Text != "The answer is 42." {
 		t.Errorf("content1: %+v", resp.Content[1])
+	}
+}
+
+// geminiToolResultResp builds a Gemini response envelope containing a single
+// functionResponse part with the given response payload and optional legacy
+// top-level error marker.
+func geminiToolResultResp(t *testing.T, response any, legacyErr any) *Response {
+	t.Helper()
+	part := map[string]any{
+		"functionResponse": map[string]any{
+			"name":     "get_weather",
+			"id":       "call_1",
+			"response": response,
+		},
+	}
+	fr := part["functionResponse"].(map[string]any)
+	if legacyErr != nil {
+		fr["error"] = legacyErr
+	}
+	geminiResp := map[string]any{
+		"response": map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"role":  "model",
+						"parts": []any{part},
+					},
+					"finishReason": "STOP",
+				},
+			},
+		},
+	}
+	return DecodeGeminiResponse(geminiResp, "gemini-3-pro")
+}
+
+func TestDecodeGeminiResponse_ToolResultNestedError(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "boom", "error": "tool failed"}, nil)
+	if len(resp.Content) != 1 || resp.Content[0].Type != ContentToolResult {
+		t.Fatalf("content: %+v", resp.Content)
+	}
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true")
+	}
+	if !strings.Contains(tr.Content, `"error":"tool failed"`) {
+		t.Errorf("Content = %q, want serialized response with error", tr.Content)
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultNoNestedErrorNoLegacy(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "ok"}, nil)
+	tr := resp.Content[0].ToolResult
+	if tr.IsError {
+		t.Errorf("IsError = true, want false (no nested or legacy error marker)")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultLegacyTopLevelError(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "boom"}, true)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true from legacy top-level error")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultLegacyTopLevelNoError(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "ok"}, false)
+	tr := resp.Content[0].ToolResult
+	if tr.IsError {
+		t.Errorf("IsError = true, want false")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultNestedErrorOverridesLegacyFalse(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "boom", "error": "failed"}, false)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true (nested error overrides legacy false)")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultNestedErrorNilFallsBackToLegacy(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "ok", "error": nil}, true)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true (nil nested error falls back to legacy true)")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultMissingNestedFallsBackToLegacy(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "boom"}, true)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true (missing nested marker falls back to legacy)")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultNestedErrorNonString(t *testing.T) {
+	resp := geminiToolResultResp(t, map[string]any{"output": "boom", "error": 42}, false)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true (non-string nested error content treated as error)")
+	}
+}
+
+func TestDecodeGeminiResponse_ToolResultNonObjectResponse(t *testing.T) {
+	resp := geminiToolResultResp(t, "plain string response", true)
+	tr := resp.Content[0].ToolResult
+	if !tr.IsError {
+		t.Errorf("IsError = false, want true from legacy marker when response is non-object")
+	}
+	if tr.Content != `"plain string response"` {
+		t.Errorf("Content = %q, want quoted string", tr.Content)
+	}
+}
+
+func TestEncodeDecodeGemini_ToolResultIsErrorRoundTrip(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		req := &Request{
+			Model: "gemini-3-pro",
+			Messages: []Message{
+				{
+					Role: "tool",
+					Content: []Content{{
+						Type: ContentToolResult,
+						ToolResult: &ToolResult{
+							ID:      "call_1",
+							Name:    "get_weather",
+							Content: `{"output":"x"}`,
+							IsError: want,
+						},
+					}},
+				},
+			},
+		}
+		env := EncodeGeminiRequest(req, "proj", "sess", 1)
+		body, _ := env["request"].(map[string]any)
+		contents, _ := body["contents"].([]any)
+		c0, _ := contents[0].(map[string]any)
+		parts, _ := c0["parts"].([]any)
+		resp := DecodeGeminiResponse(
+			map[string]any{
+				"response": map[string]any{
+					"candidates": []any{
+						map[string]any{
+							"content": map[string]any{
+								"role":  "model",
+								"parts": parts,
+							},
+							"finishReason": "STOP",
+						},
+					},
+				},
+			},
+			"gemini-3-pro",
+		)
+		tr := resp.Content[0].ToolResult
+		if tr.IsError != want {
+			t.Errorf("round-trip IsError = %v, want %v", tr.IsError, want)
+		}
 	}
 }
 
@@ -992,5 +1337,215 @@ func TestJSONRoundTrip(t *testing.T) {
 	}
 	if len(b) == 0 {
 		t.Error("empty JSON output")
+	}
+}
+
+// TestEncodeGeminiRequest_WebSearchTool verifies that ToolWebSearch is
+// encoded as a separate google_search entry, not a functionDeclaration.
+func TestEncodeGeminiRequest_WebSearchTool(t *testing.T) {
+	req := &Request{
+		Model: "gemini-3.7-flash-high",
+		Tools: []Tool{
+			{Kind: ToolWebSearch, Name: "web_search"},
+			{Kind: ToolFunction, Name: "get_weather", Description: "Get weather",
+				Schema: map[string]any{"type": "object", "properties": map[string]any{}}},
+		},
+	}
+	body := encodeGeminiBody(req)
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("tools = %v, want 2 entries", body["tools"])
+	}
+	// First entry should be google_search.
+	first, _ := tools[0].(map[string]any)
+	if _, ok := first["google_search"]; !ok {
+		t.Errorf("first tool entry = %v, want google_search", first)
+	}
+	// Second entry should be functionDeclarations.
+	second, _ := tools[1].(map[string]any)
+	funcDecls, _ := second["functionDeclarations"].([]any)
+	if len(funcDecls) != 1 {
+		t.Errorf("functionDeclarations = %d, want 1", len(funcDecls))
+	}
+}
+
+// TestDecodeGeminiResponse_GroundingMetadata verifies that
+// groundingMetadata is decoded into IR ContentWebSearch.
+func TestDecodeGeminiResponse_GroundingMetadata(t *testing.T) {
+	geminiResp := map[string]any{
+		"response": map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{"text": "The answer is 42."},
+						},
+					},
+					"finishReason": "STOP",
+					"groundingMetadata": map[string]any{
+						"webSearchQueries": []any{"what is the answer"},
+						"groundingChunks": []any{
+							map[string]any{"web": map[string]any{"uri": "https://example.com/1", "title": "Example 1"}},
+							map[string]any{"web": map[string]any{"uri": "https://example.com/2", "title": "Example 2"}},
+						},
+						"groundingSupports": []any{
+							map[string]any{
+								"segment":               map[string]any{"text": "The answer is 42."},
+								"groundingChunkIndices": []any{float64(0)},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	resp := DecodeGeminiResponse(geminiResp, "gemini-3.7-flash-high")
+	if len(resp.Content) != 2 {
+		t.Fatalf("content = %d items, want 2 (text + web_search)", len(resp.Content))
+	}
+	if resp.Content[0].Type != ContentText || resp.Content[0].Text != "The answer is 42." {
+		t.Errorf("content[0] = %v, want text", resp.Content[0])
+	}
+	if resp.Content[1].Type != ContentWebSearch {
+		t.Fatalf("content[1] type = %v, want ContentWebSearch", resp.Content[1].Type)
+	}
+	wsr := resp.Content[1].WebSearch
+	if wsr == nil {
+		t.Fatal("WebSearch is nil")
+	}
+	if wsr.Query != "what is the answer" {
+		t.Errorf("query = %q, want %q", wsr.Query, "what is the answer")
+	}
+	if len(wsr.Sources) != 2 {
+		t.Fatalf("sources = %d, want 2", len(wsr.Sources))
+	}
+	if wsr.Sources[0].URI != "https://example.com/1" || wsr.Sources[0].Title != "Example 1" {
+		t.Errorf("source[0] = %v", wsr.Sources[0])
+	}
+	if wsr.Sources[0].Snippet != "The answer is 42." {
+		t.Errorf("source[0] snippet = %q, want %q", wsr.Sources[0].Snippet, "The answer is 42.")
+	}
+}
+
+// TestEncodeAnthropic_WebSearchResult verifies that IR ContentWebSearch
+// is encoded as an Anthropic web_search_tool_result block.
+func TestEncodeAnthropic_WebSearchResult(t *testing.T) {
+	resp := &Response{
+		Model: "claude-3",
+		Content: []Content{
+			{Type: ContentText, Text: "Here are the results."},
+			{Type: ContentWebSearch, WebSearch: &WebSearchResult{
+				Query: "test query",
+				Sources: []WebSearchSource{
+					{URI: "https://example.com/1", Title: "Example 1", Snippet: "Snippet 1"},
+					{URI: "https://example.com/2", Title: "Example 2"},
+				},
+			}},
+		},
+	}
+	out := EncodeAnthropic(resp)
+	blocks, _ := out["content"].([]any)
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %d, want 2", len(blocks))
+	}
+	// Second block should be web_search_tool_result.
+	block, _ := blocks[1].(map[string]any)
+	if block["type"] != "web_search_tool_result" {
+		t.Errorf("block type = %v, want web_search_tool_result", block["type"])
+	}
+	results, _ := block["content"].([]any)
+	if len(results) != 2 {
+		t.Fatalf("results = %d, want 2", len(results))
+	}
+	first, _ := results[0].(map[string]any)
+	if first["type"] != "web_search_result" {
+		t.Errorf("result[0] type = %v, want web_search_result", first["type"])
+	}
+	if first["url"] != "https://example.com/1" {
+		t.Errorf("result[0] url = %v, want https://example.com/1", first["url"])
+	}
+	if first["title"] != "Example 1" {
+		t.Errorf("result[0] title = %v, want Example 1", first["title"])
+	}
+	if first["snippet"] != "Snippet 1" {
+		t.Errorf("result[0] snippet = %v, want Snippet 1", first["snippet"])
+	}
+}
+
+// TestRoundTrip_AnthropicWebSearchToGeminiToAnthropic verifies the
+// full round trip: Anthropic web_search tool → Gemini google_search →
+// Anthropic web_search_tool_result.
+func TestRoundTrip_AnthropicWebSearchToGeminiToAnthropic(t *testing.T) {
+	// Step 1: Decode an Anthropic request with web_search_20250305.
+	anthropicReq := map[string]any{
+		"model":      "claude-3",
+		"max_tokens": float64(4096),
+		"messages": []any{
+			map[string]any{"role": "user", "content": "Search for the latest news"},
+		},
+		"tools": []any{
+			map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": float64(5)},
+		},
+	}
+	irReq := DecodeAnthropic(anthropicReq)
+	if len(irReq.Tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(irReq.Tools))
+	}
+	if irReq.Tools[0].Kind != ToolWebSearch {
+		t.Errorf("tool kind = %v, want ToolWebSearch", irReq.Tools[0].Kind)
+	}
+
+	// Step 2: Encode to Gemini — should produce google_search, not functionDeclaration.
+	body := encodeGeminiBody(irReq)
+	tools, _ := body["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("gemini tools = %d, want 1", len(tools))
+	}
+	first, _ := tools[0].(map[string]any)
+	if _, ok := first["google_search"]; !ok {
+		t.Errorf("gemini tool = %v, want google_search", first)
+	}
+
+	// Step 3: Simulate a Gemini response with groundingMetadata.
+	geminiResp := map[string]any{
+		"response": map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{map[string]any{"text": "Here is the news."}},
+					},
+					"finishReason": "STOP",
+					"groundingMetadata": map[string]any{
+						"webSearchQueries": []any{"latest news"},
+						"groundingChunks": []any{
+							map[string]any{"web": map[string]any{"uri": "https://news.example.com", "title": "News Site"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	irResp := DecodeGeminiResponse(geminiResp, "gemini-3.7-flash-high")
+
+	// Step 4: Encode back to Anthropic — should produce web_search_tool_result.
+	anthropicResp := EncodeAnthropic(irResp)
+	blocks, _ := anthropicResp["content"].([]any)
+	found := false
+	for _, bAny := range blocks {
+		b, _ := bAny.(map[string]any)
+		if b["type"] == "web_search_tool_result" {
+			found = true
+			results, _ := b["content"].([]any)
+			if len(results) != 1 {
+				t.Errorf("results = %d, want 1", len(results))
+			}
+			r, _ := results[0].(map[string]any)
+			if r["url"] != "https://news.example.com" {
+				t.Errorf("url = %v, want https://news.example.com", r["url"])
+			}
+		}
+	}
+	if !found {
+		t.Error("web_search_tool_result block not found in Anthropic response")
 	}
 }
