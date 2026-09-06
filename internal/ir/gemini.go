@@ -404,6 +404,16 @@ func NormalizeSchemaForGemini(schema map[string]any) map[string]any {
 			out[key] = val
 		}
 	}
+
+	// Gemini requires every ARRAY type to declare an items schema.
+	// If the source omitted items or used a non-object form (e.g.
+	// items: true), normalize leaves it absent — supply a permissive
+	// default so the request is not rejected.
+	if out["type"] == "ARRAY" {
+		if _, ok := out["items"].(map[string]any); !ok {
+			out["items"] = map[string]any{"type": "STRING"}
+		}
+	}
 	return out
 }
 

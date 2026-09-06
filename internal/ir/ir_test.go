@@ -1063,6 +1063,45 @@ func TestNormalizeSchemaForGemini(t *testing.T) {
 	}
 }
 
+func TestNormalizeSchemaForGemini_ArrayMissingItems(t *testing.T) {
+	// ARRAY without items should get a default items schema.
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags": map[string]any{"type": "array"},
+			"matrix": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "array"},
+			},
+			"anyItems": map[string]any{
+				"type":  "array",
+				"items": true,
+			},
+		},
+	}
+	out := NormalizeSchemaForGemini(schema)
+	props, _ := out["properties"].(map[string]any)
+
+	tags, _ := props["tags"].(map[string]any)
+	if items, _ := tags["items"].(map[string]any); items == nil || items["type"] != "STRING" {
+		t.Errorf("tags items = %v, want {type: STRING}", tags["items"])
+	}
+
+	matrix, _ := props["matrix"].(map[string]any)
+	matrixItems, _ := matrix["items"].(map[string]any)
+	if matrixItems == nil || matrixItems["type"] != "ARRAY" {
+		t.Errorf("matrix items type = %v, want ARRAY", matrixItems)
+	}
+	if inner, _ := matrixItems["items"].(map[string]any); inner == nil || inner["type"] != "STRING" {
+		t.Errorf("matrix items.items = %v, want {type: STRING}", inner)
+	}
+
+	anyItems, _ := props["anyItems"].(map[string]any)
+	if items, _ := anyItems["items"].(map[string]any); items == nil || items["type"] != "STRING" {
+		t.Errorf("anyItems items = %v, want {type: STRING}", anyItems["items"])
+	}
+}
+
 func TestRoundTrip_OpenAIChatToGeminiToOpenAIChat(t *testing.T) {
 	// OpenAI request → IR → Gemini request → Gemini response → IR → OpenAI response
 	openaiReq := map[string]any{
