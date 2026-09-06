@@ -368,40 +368,31 @@ func NormalizeSchemaForGemini(schema map[string]any) map[string]any {
 		}
 	}
 
-	// Copy supported fields.
-	for key, val := range schema {
-		switch key {
-		case "type", "format", "strict", "$schema", "definitions",
-			"exclusiveMinimum", "exclusiveMaximum", "default", "examples",
-			"pattern", "multipleOf", "minLength", "maxLength",
-			"minItems", "maxItems", "minProperties", "maxProperties",
-			"uniqueItems", "const", "enum", "title", "$ref",
-			"additionalProperties", "propertyNames",
-			"oneOf", "anyOf", "allOf", "not":
-			// Skip unsupported fields.
-			continue
-		case "description":
-			out["description"] = val
-		case "nullable":
-			out["nullable"] = val
-		case "required":
-			out["required"] = val
-		case "items":
-			if sub, ok := val.(map[string]any); ok {
-				out["items"] = NormalizeSchemaForGemini(sub)
-			}
-		case "properties":
-			if props, ok := val.(map[string]any); ok {
-				normalized := make(map[string]any, len(props))
-				for k, v := range props {
-					if sub, ok := v.(map[string]any); ok {
-						normalized[k] = NormalizeSchemaForGemini(sub)
-					}
+	// Copy only supported fields (strict allowlist).
+	// Gemini API rejects unknown fields such as $defs, definitions, $schema, etc.
+	if val, ok := schema["description"]; ok {
+		out["description"] = val
+	}
+	if val, ok := schema["nullable"]; ok {
+		out["nullable"] = val
+	}
+	if val, ok := schema["required"]; ok {
+		out["required"] = val
+	}
+	if val, ok := schema["items"]; ok {
+		if sub, ok := val.(map[string]any); ok {
+			out["items"] = NormalizeSchemaForGemini(sub)
+		}
+	}
+	if val, ok := schema["properties"]; ok {
+		if props, ok := val.(map[string]any); ok {
+			normalized := make(map[string]any, len(props))
+			for k, v := range props {
+				if sub, ok := v.(map[string]any); ok {
+					normalized[k] = NormalizeSchemaForGemini(sub)
 				}
-				out["properties"] = normalized
 			}
-		default:
-			out[key] = val
+			out["properties"] = normalized
 		}
 	}
 

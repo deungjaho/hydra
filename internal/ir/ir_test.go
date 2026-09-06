@@ -1063,6 +1063,46 @@ func TestNormalizeSchemaForGemini(t *testing.T) {
 	}
 }
 
+func TestNormalizeSchemaForGemini_StripsDefsAndUnknownFields(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"$defs": map[string]any{
+			"SomeSubModel": map[string]any{"type": "string"},
+		},
+		"definitions": map[string]any{
+			"LegacyDef": map[string]any{"type": "string"},
+		},
+		"$comment": "metadata comment",
+		"patternProperties": map[string]any{
+			".*": map[string]any{"type": "string"},
+		},
+		"properties": map[string]any{
+			"param": map[string]any{
+				"type":        "string",
+				"description": "test param",
+				"$defs":       map[string]any{"nested": true},
+			},
+		},
+	}
+	out := NormalizeSchemaForGemini(schema)
+	for _, forbidden := range []string{"$defs", "definitions", "$comment", "patternProperties"} {
+		if _, ok := out[forbidden]; ok {
+			t.Errorf("forbidden field %q should be stripped", forbidden)
+		}
+	}
+	props, _ := out["properties"].(map[string]any)
+	param, _ := props["param"].(map[string]any)
+	if param == nil {
+		t.Fatal("param property missing")
+	}
+	if param["type"] != "STRING" || param["description"] != "test param" {
+		t.Errorf("param property corrupted: %v", param)
+	}
+	if _, ok := param["$defs"]; ok {
+		t.Error("nested $defs should be stripped")
+	}
+}
+
 func TestNormalizeSchemaForGemini_ArrayMissingItems(t *testing.T) {
 	// ARRAY without items should get a default items schema.
 	schema := map[string]any{
