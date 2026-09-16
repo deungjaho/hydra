@@ -296,6 +296,131 @@ func TestDecodeOpenAIChat_DuplicateToolCallIDs(t *testing.T) {
 	}
 }
 
+// TestDecodeAnthropic_DuplicateToolCallIDs verifies that Anthropic tool results
+// with duplicate tool_use IDs across turns are paired with the nearest
+// preceding assistant tool_use, not overwritten by subsequent turns.
+func TestDecodeAnthropic_DuplicateToolCallIDs(t *testing.T) {
+	req := map[string]any{
+		"model": "gemini-3.8-flash-high",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "write file"},
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    "call_25858",
+						"name":  "write",
+						"input": map[string]any{"path": "test.txt", "content": "hello"},
+					},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_25858",
+						"content":     "Successfully wrote to test.txt",
+					},
+				},
+			},
+			map[string]any{"role": "assistant", "content": "File written."},
+			map[string]any{"role": "user", "content": "run bash"},
+			map[string]any{
+				"role": "assistant",
+				"content": []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    "call_25858",
+						"name":  "bash",
+						"input": map[string]any{"command": "echo ok"},
+					},
+				},
+			},
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_25858",
+						"content":     "ok\n",
+					},
+				},
+			},
+		},
+	}
+	r := DecodeAnthropic(req)
+	var toolResults []*ToolResult
+	for i := range r.Messages {
+		for _, c := range r.Messages[i].Content {
+			if c.Type == ContentToolResult && c.ToolResult != nil {
+				toolResults = append(toolResults, c.ToolResult)
+			}
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(toolResults))
+	}
+	if toolResults[0].Name != "write" {
+		t.Errorf("first tool result name = %q, want write", toolResults[0].Name)
+	}
+	if toolResults[1].Name != "bash" {
+		t.Errorf("second tool result name = %q, want bash", toolResults[1].Name)
+	}
+}
+
+// TestDecodeResponses_DuplicateToolCallIDs verifies that Responses API function_call_output
+// items with duplicate call_ids across turns are paired with the nearest preceding function_call.
+func TestDecodeResponses_DuplicateToolCallIDs(t *testing.T) {
+	req := map[string]any{
+		"model": "gemini-3.8-flash-high",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "write file"},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_999",
+				"name":      "write",
+				"arguments": `{"path":"test.txt"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_999",
+				"output":  "ok",
+			},
+			map[string]any{
+				"type":      "function_call",
+				"call_id":   "call_999",
+				"name":      "bash",
+				"arguments": `{"command":"ls"}`,
+			},
+			map[string]any{
+				"type":    "function_call_output",
+				"call_id": "call_999",
+				"output":  "file.txt",
+			},
+		},
+	}
+	r := DecodeResponses(req)
+	var toolResults []*ToolResult
+	for i := range r.Messages {
+		for _, c := range r.Messages[i].Content {
+			if c.Type == ContentToolResult && c.ToolResult != nil {
+				toolResults = append(toolResults, c.ToolResult)
+			}
+		}
+	}
+	if len(toolResults) != 2 {
+		t.Fatalf("tool results = %d, want 2", len(toolResults))
+	}
+	if toolResults[0].Name != "write" {
+		t.Errorf("first tool result name = %q, want write", toolResults[0].Name)
+	}
+	if toolResults[1].Name != "bash" {
+		t.Errorf("second tool result name = %q, want bash", toolResults[1].Name)
+	}
+}
+
 func TestEncodeGeminiRequest_ToolResultError(t *testing.T) {
 	r := &Request{
 		Model: "gemini-3-pro",

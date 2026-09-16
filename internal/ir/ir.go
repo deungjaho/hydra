@@ -209,3 +209,28 @@ const (
 	StreamDone
 	StreamWebSearch
 )
+
+// NearestToolCallName scans backward through messages to find the nearest
+// preceding assistant message containing a tool call with the given id.
+// It returns the function name, or "" if not found. This correctly pairs
+// tool responses with their corresponding tool calls when duplicate IDs
+// exist across conversational turns.
+func NearestToolCallName(messages []Message, id string) string {
+	if id == "" {
+		return ""
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" {
+			continue
+		}
+		for _, c := range msg.Content {
+			if c.Type == ContentToolCall && c.ToolCall != nil && c.ToolCall.ID == id {
+				if c.ToolCall.Name != "" {
+					return c.ToolCall.Name
+				}
+			}
+		}
+	}
+	return ""
+}

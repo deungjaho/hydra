@@ -89,7 +89,16 @@ func DecodeResponses(req map[string]any) *Request {
 				continue
 			}
 			msgs := decodeResponsesItem(item, callNameMap)
-			r.Messages = append(r.Messages, msgs...)
+			for _, m := range msgs {
+				for i := range m.Content {
+					if m.Content[i].Type == ContentToolResult && m.Content[i].ToolResult != nil {
+						if name := NearestToolCallName(r.Messages, m.Content[i].ToolResult.ID); name != "" {
+							m.Content[i].ToolResult.Name = name
+						}
+					}
+				}
+				r.Messages = append(r.Messages, m)
+			}
 		}
 	}
 

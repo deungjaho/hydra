@@ -75,14 +75,14 @@ func DecodeOpenAIChat(req map[string]any) *Request {
 		}
 	}
 	toolNameMap := buildOpenAIToolNameMap(req["messages"])
-	for i, msg := range rawMsgs {
+	for _, msg := range rawMsgs {
 		m := decodeOpenAIMessage(msg, toolNameMap)
 		// For tool responses, override the name with the nearest
 		// preceding assistant tool_call of the same ID. This fixes
 		// cases where duplicate tool_call IDs across turns cause the
 		// global map to return the wrong name.
 		if m.Role == "tool" && len(m.Content) > 0 && m.Content[0].ToolResult != nil {
-			if name := nearestToolCallName(rawMsgs, i, m.Content[0].ToolResult.ID); name != "" {
+			if name := NearestToolCallName(r.Messages, m.Content[0].ToolResult.ID); name != "" {
 				m.Content[0].ToolResult.Name = name
 			}
 		}
@@ -158,45 +158,6 @@ func buildOpenAIToolNameMap(messagesAny any) map[string]string {
 		}
 	}
 	return m
-}
-
-// nearestToolCallName scans backward from targetMsg in rawMsgs to find
-// the nearest preceding assistant message whose tool_calls contain an
-// entry with the given id. It returns the function name for that entry,
-// or "" if not found. This is used to correctly pair tool responses with
-// their corresponding tool calls when duplicate IDs exist across turns.
-func nearestToolCallName(rawMsgs []map[string]any, targetIdx int, id string) string {
-	if id == "" || targetIdx < 0 {
-		return ""
-	}
-	// Scan backward for the nearest assistant message with a matching tool_call.
-	for i := targetIdx - 1; i >= 0; i-- {
-		msg := rawMsgs[i]
-		role, _ := msg["role"].(string)
-		if role != "assistant" {
-			continue
-		}
-		toolCalls, ok := msg["tool_calls"].([]any)
-		if !ok {
-			continue
-		}
-		for _, tcAny := range toolCalls {
-			tc, _ := tcAny.(map[string]any)
-			if tc == nil {
-				continue
-			}
-			tcID, _ := tc["id"].(string)
-			if tcID == id {
-				fn, _ := tc["function"].(map[string]any)
-				if fn != nil {
-					if name, _ := fn["name"].(string); name != "" {
-						return name
-					}
-				}
-			}
-		}
-	}
-	return ""
 }
 
 // decodeOpenAIMessage converts an OpenAI message to IR.

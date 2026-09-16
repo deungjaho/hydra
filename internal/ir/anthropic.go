@@ -90,7 +90,19 @@ func DecodeAnthropic(req map[string]any) *Request {
 		if msg == nil {
 			continue
 		}
-		r.Messages = append(r.Messages, decodeAnthropicMessage(msg, toolNameMap))
+		m := decodeAnthropicMessage(msg, toolNameMap)
+		// For tool responses, override the name with the nearest
+		// preceding assistant tool_call of the same ID. This fixes
+		// cases where duplicate tool_call IDs across turns cause the
+		// global map to return the wrong name.
+		for i := range m.Content {
+			if m.Content[i].Type == ContentToolResult && m.Content[i].ToolResult != nil {
+				if name := NearestToolCallName(r.Messages, m.Content[i].ToolResult.ID); name != "" {
+					m.Content[i].ToolResult.Name = name
+				}
+			}
+		}
+		r.Messages = append(r.Messages, m)
 	}
 
 	// Tools.
