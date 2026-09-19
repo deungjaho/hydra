@@ -92,8 +92,9 @@ func (s *ProxyServer) streamOpenAISSEIR(
 }
 
 // streamAnthropicSSEIR transforms a Gemini SSE byte stream into an Anthropic
-// SSE byte stream using the IR pipeline. This is the IR-based replacement
-// for streamAnthropicSSE.
+// SSE byte stream using the IR pipeline. If upstream Gemini finishes with
+// thoughts only and no text or tool calls, it invokes stitchFn to transparently
+// request continuation and stream the remaining output into the same SSE response.
 func (s *ProxyServer) streamAnthropicSSEIR(
 	w http.ResponseWriter,
 	body io.Reader,
@@ -101,6 +102,7 @@ func (s *ProxyServer) streamAnthropicSSEIR(
 	accountID int64,
 	apiKeyID *int64,
 	clientIP string,
+	stitchFn func(state *AnthropicStreamState) io.ReadCloser,
 ) {
 	flusher, _ := w.(http.Flusher)
 	setSSEHeaders(w)
@@ -108,43 +110,52 @@ func (s *ProxyServer) streamAnthropicSSEIR(
 		flusher.Flush()
 	}
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
 	state := NewAnthropicStreamState(model)
 	var totalPrompt, totalCompletion, totalCached int64
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		m := irParseGeminiSSELine(line)
-		if m == nil {
-			continue
-		}
-		inner := innerResponse(m)
-		if usage, ok := inner["usageMetadata"].(map[string]any); ok {
-			if v := int64Or(usage, "promptTokenCount", 0); v != 0 {
-				totalPrompt = v
+	consumeStream := func(r io.Reader) {
+		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			m := irParseGeminiSSELine(line)
+			if m == nil {
+				continue
 			}
-			if v := int64Or(usage, "candidatesTokenCount", 0); v != 0 {
-				totalCompletion = v
+			inner := innerResponse(m)
+			if usage, ok := inner["usageMetadata"].(map[string]any); ok {
+				if v := int64Or(usage, "promptTokenCount", 0); v != 0 {
+					totalPrompt = v
+				}
+				if v := int64Or(usage, "candidatesTokenCount", 0); v != 0 {
+					totalCompletion = v
+				}
+				if v := int64Or(usage, "cachedContentTokenCount", 0); v != 0 {
+					totalCached = v
+				}
 			}
-			if v := int64Or(usage, "cachedContentTokenCount", 0); v != 0 {
-				totalCached = v
+			for _, out := range state.ProcessChunk(inner) {
+				_, _ = io.WriteString(w, out)
 			}
-		}
-		for _, out := range state.ProcessChunk(inner) {
-			_, _ = io.WriteString(w, out)
-		}
-		if flusher != nil {
-			flusher.Flush()
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	}
 
-	// Finalize the Anthropic stream so terminal SSE events (message_delta +
-	// message_stop) are always emitted, even when the upstream Gemini stream
-	// ends without a chunk carrying finishReason. Finalize is a no-op if
-	// ProcessChunk already emitted the terminal events.
-	for _, out := range state.Finalize() {
+	consumeStream(body)
+
+	// If the model output only thoughts and no text or tool calls, attempt
+	// transparent continuation stitching.
+	if state.NeedsStitch() && stitchFn != nil {
+		if nextBody := stitchFn(state); nextBody != nil {
+			consumeStream(nextBody)
+			nextBody.Close()
+		}
+	}
+
+	// Always guarantee terminal SSE events are emitted.
+	for _, out := range state.ForceFinish() {
 		_, _ = io.WriteString(w, out)
 	}
 	if flusher != nil {

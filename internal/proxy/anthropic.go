@@ -25,9 +25,24 @@ type AnthropicStreamState struct {
 	messageStartSet bool
 	stopped         bool
 	usedTool        bool
+	hasText         bool
+	hasThinking     bool
+	accumulatedThought string
 	inputTokens     int64
 	outputTokens    int64
 	cachedTokens    int64
+}
+
+// NeedsStitch returns true if the stream ended with thoughts but produced
+// neither text nor tool calls. In this state, an Anthropic client would stall
+// on an empty turn, so the proxy should transparently request continuation.
+func (s *AnthropicStreamState) NeedsStitch() bool {
+	return s.hasThinking && !s.hasText && !s.usedTool
+}
+
+// AccumulatedThought returns the thinking text received so far.
+func (s *AnthropicStreamState) AccumulatedThought() string {
+	return s.accumulatedThought
 }
 
 type anthropicBlockType int
@@ -151,6 +166,8 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 		}
 		if thought, _ := part["thought"].(bool); thought {
 			if t, ok := part["text"].(string); ok && t != "" {
+				s.hasThinking = true
+				s.accumulatedThought += t
 				if s.currentBlock == nil || *s.currentBlock != blockThinking {
 					if s.currentBlock != nil {
 						out = append(out, s.endBlock())
@@ -165,6 +182,7 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 			continue
 		}
 		if t, ok := part["text"].(string); ok && t != "" {
+			s.hasText = true
 			if s.currentBlock == nil || *s.currentBlock != blockText {
 				if s.currentBlock != nil {
 					out = append(out, s.endBlock())
@@ -213,6 +231,12 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 		if s.currentBlock != nil {
 			out = append(out, s.endBlock())
 		}
+		// If the model produced only thinking thoughts and no text or tool calls,
+		// do NOT emit message_delta or message_stop. Let the caller inspect
+		// NeedsStitch() to perform an internal continuation.
+		if s.NeedsStitch() {
+			return out
+		}
 		stopReason := "end_turn"
 		if s.usedTool {
 			stopReason = "tool_use"
@@ -237,10 +261,18 @@ func (s *AnthropicStreamState) ProcessChunk(inner map[string]any) []string {
 }
 
 // Finalize emits terminal Anthropic SSE events when the upstream stream ends
-// without a finishReason. Per the Anthropic SSE protocol, every stream must
-// terminate with message_delta + message_stop. If ProcessChunk already emitted
-// them (finishReason was set on the last chunk), Finalize is a no-op.
+// without a finishReason. If NeedsStitch() is true, it returns nil so the caller
+// can proceed with continuation stitching.
 func (s *AnthropicStreamState) Finalize() []string {
+	if s.stopped || s.NeedsStitch() {
+		return nil
+	}
+	return s.ForceFinish()
+}
+
+// ForceFinish emits terminal Anthropic SSE events unconditionally,
+// regardless of NeedsStitch(). Used after continuation completes or exhausts.
+func (s *AnthropicStreamState) ForceFinish() []string {
 	if s.stopped {
 		return nil
 	}

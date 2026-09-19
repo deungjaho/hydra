@@ -417,3 +417,71 @@ func TestAnthropicStreamStateDuplicateFinalize(t *testing.T) {
 		t.Errorf("duplicate Finalize on abrupt stream emitted %d events, want 0", len(dup))
 	}
 }
+
+// TestAnthropicStreamStateNeedsStitch verifies that when a stream contains
+// only thinking and no text or tool calls, NeedsStitch() is true and terminal
+// events are not emitted until ForceFinish().
+func TestAnthropicStreamStateNeedsStitch(t *testing.T) {
+	s := NewAnthropicStreamState("gemini-3.8-flash-high")
+	var all []string
+	all = append(all, s.ProcessChunk(map[string]any{
+		"usageMetadata": map[string]any{
+			"promptTokenCount":     float64(50),
+			"candidatesTokenCount": float64(100),
+			"thoughtsTokenCount":   float64(100),
+		},
+		"candidates": []any{
+			map[string]any{
+				"content": map[string]any{
+					"parts": []any{
+						map[string]any{"text": "Reasoning about the problem...", "thought": true},
+					},
+				},
+				"finishReason": "STOP",
+			},
+		},
+	})...)
+
+	if !s.NeedsStitch() {
+		t.Fatal("expected NeedsStitch() to be true")
+	}
+	if s.AccumulatedThought() != "Reasoning about the problem..." {
+		t.Fatalf("unexpected thought text: %q", s.AccumulatedThought())
+	}
+
+	// Finalize should be a no-op when NeedsStitch is true.
+	if fin := s.Finalize(); len(fin) != 0 {
+		t.Fatalf("expected Finalize to return nil while NeedsStitch is true, got %v", fin)
+	}
+
+	// Next chunk arrives from continuation with actual text.
+	all = append(all, s.ProcessChunk(map[string]any{
+		"candidates": []any{
+			map[string]any{
+				"content": map[string]any{
+					"parts": []any{
+						map[string]any{"text": "Here is the solution."},
+					},
+				},
+				"finishReason": "STOP",
+			},
+		},
+	})...)
+
+	if s.NeedsStitch() {
+		t.Fatal("NeedsStitch() should be false once text is emitted")
+	}
+
+	records := collectSSE(t, all)
+	assertEventSequence(t, records,
+		"message_start",
+		"content_block_start", // thinking
+		"content_block_delta", // thinking_delta
+		"content_block_stop",
+		"content_block_start", // text
+		"content_block_delta", // text_delta
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	)
+}

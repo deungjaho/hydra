@@ -83,8 +83,63 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		},
 		handleSuccess: func(w http.ResponseWriter, resp *http.Response, acc *account.Account) {
 			// Streaming success.
+			stitchFn := func(state *AnthropicStreamState) io.ReadCloser {
+				thought := state.AccumulatedThought()
+				if thought == "" {
+					return nil
+				}
+				// Prepare a continuation request by appending the assistant's thinking
+				// as the last turn to prompt Gemini for the actual output.
+				contReq := make(map[string]any, len(anthropicReq)+2)
+				for k, v := range anthropicReq {
+					contReq[k] = v
+				}
+				var origMsgs []any
+				if ms, ok := anthropicReq["messages"].([]any); ok {
+					origMsgs = ms
+				}
+				newMsgs := make([]any, 0, len(origMsgs)+1)
+				newMsgs = append(newMsgs, origMsgs...)
+				newMsgs = append(newMsgs, map[string]any{
+					"role": "assistant",
+					"content": []any{
+						map[string]any{
+							"type":     "thinking",
+							"thinking": thought,
+						},
+					},
+				})
+				contReq["messages"] = newMsgs
+
+				sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+				requestN := s.State.NextRequestN()
+				effectiveModel := mappedModel
+				if avail := acc.AvailableModels(); len(avail) > 0 {
+					effectiveModel = ResolveModelForAccount(mappedModel, avail)
+				}
+				upBody := irEncodeGeminiRequest(contReq, "anthropic", acc.ProjectID, sessionUUID, requestN)
+				upBody["model"] = effectiveModel
+				bodyBytes, err := json.Marshal(upBody)
+				if err != nil {
+					return nil
+				}
+				accessToken, ok := s.ensureFreshToken(
+					acc, mappedModel, originalModel, clientIP, apiKeyID, w)
+				if !ok {
+					return nil
+				}
+				cResp, err := SendRequest(s.HTTP, accessToken, acc.ProjectID, bodyBytes, true, acc.MachineID)
+				if err != nil || cResp.StatusCode != http.StatusOK {
+					if cResp != nil && cResp.Body != nil {
+						cResp.Body.Close()
+					}
+					return nil
+				}
+				return cResp.Body
+			}
+
 			s.streamAnthropicSSEIR(w, resp.Body, originalModel,
-				acc.ID, apiKeyID, clientIP)
+				acc.ID, apiKeyID, clientIP, stitchFn)
 			resp.Body.Close()
 		},
 		handleSuccessNonStream: func(w http.ResponseWriter, resp *http.Response, acc *account.Account) {
