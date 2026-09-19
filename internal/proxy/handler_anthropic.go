@@ -88,8 +88,11 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 				if thought == "" {
 					return nil
 				}
-				// Prepare a continuation request by appending the assistant's thinking
-				// as the last turn to prompt Gemini for the actual output.
+				// Google Gemini requires generateContent requests to end with a user turn
+				// (error: "Requests ending with a model turn are not supported").
+				// To stitch transparently, we keep the original history and append a
+				// seamless continuation turn as a user turn, asking the model to proceed
+				// with outputting the execution steps or tools planned in its reasoning.
 				contReq := make(map[string]any, len(anthropicReq)+2)
 				for k, v := range anthropicReq {
 					contReq[k] = v
@@ -98,7 +101,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 				if ms, ok := anthropicReq["messages"].([]any); ok {
 					origMsgs = ms
 				}
-				newMsgs := make([]any, 0, len(origMsgs)+1)
+				newMsgs := make([]any, 0, len(origMsgs)+2)
 				newMsgs = append(newMsgs, origMsgs...)
 				newMsgs = append(newMsgs, map[string]any{
 					"role": "assistant",
@@ -106,6 +109,19 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 						map[string]any{
 							"type":     "thinking",
 							"thinking": thought,
+						},
+						map[string]any{
+							"type": "text",
+							"text": "...",
+						},
+					},
+				})
+				newMsgs = append(newMsgs, map[string]any{
+					"role": "user",
+					"content": []any{
+						map[string]any{
+							"type": "text",
+							"text": "Continue and execute the plan.",
 						},
 					},
 				})
