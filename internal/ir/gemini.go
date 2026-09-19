@@ -683,10 +683,19 @@ func int64FromAny(v any) int64 {
 	return 0
 }
 
-// DecodeGeminiStreamChunk decodes one Gemini SSE chunk into zero or more
-// IR stream events. The caller is responsible for maintaining stream
-// state (e.g. which blocks are open) across calls.
-func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
+// GeminiStreamState carries decoding state across the SSE chunks of one
+// streamed response. Create one instance per response stream.
+type GeminiStreamState struct {
+	// toolCallIdx is the next positional index to assign to a tool call.
+	// Gemini may deliver parallel function calls in separate chunks, so
+	// the index must accumulate across the whole stream rather than
+	// restart per chunk.
+	toolCallIdx int
+}
+
+// DecodeChunk decodes one Gemini SSE chunk into zero or more IR stream
+// events, advancing the stream state.
+func (s *GeminiStreamState) DecodeChunk(chunk map[string]any) []StreamEvent {
 	inner := extractInnerResponse(chunk)
 	if inner == nil {
 		return nil
@@ -709,15 +718,14 @@ func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
 			contentMap, _ := candidate["content"].(map[string]any)
 			if contentMap != nil {
 				parts, _ := contentMap["parts"].([]any)
-				toolCallIdx := 0
 				for _, partAny := range parts {
 					part, _ := partAny.(map[string]any)
 					if part == nil {
 						continue
 					}
-					evs := decodeGeminiPartToStream(part, toolCallIdx)
+					evs := decodeGeminiPartToStream(part, s.toolCallIdx)
 					if _, ok := part["functionCall"].(map[string]any); ok {
-						toolCallIdx++
+						s.toolCallIdx++
 					}
 					events = append(events, evs...)
 				}
@@ -745,8 +753,8 @@ func DecodeGeminiStreamChunk(chunk map[string]any) []StreamEvent {
 }
 
 // decodeGeminiPartToStream converts a Gemini part to stream events.
-// toolCallIdx tracks the positional index of tool calls within a single
-// chunk so that multiple parallel tool calls get distinct OpenAI indices.
+// toolCallIdx is the positional index of this tool call within the whole
+// response turn so that parallel tool calls get distinct OpenAI indices.
 func decodeGeminiPartToStream(part map[string]any, toolCallIdx int) []StreamEvent {
 	// Thought text.
 	if t, ok := part["text"].(string); ok {

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/deungjaho/hydra/internal/account"
+	"github.com/deungjaho/hydra/internal/ir"
 )
 
 // streamOpenAISSEIR transforms a Gemini SSE byte stream into an OpenAI SSE
@@ -32,6 +33,7 @@ func (s *ProxyServer) streamOpenAISSEIR(
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	firstChunk := true
+	gstate := &ir.GeminiStreamState{}
 	var totalPrompt, totalCompletion, totalCached, totalThought int64
 
 	for scanner.Scan() {
@@ -58,7 +60,7 @@ func (s *ProxyServer) streamOpenAISSEIR(
 			}
 		}
 
-		events := irStreamGeminiChunk(m)
+		events := gstate.DecodeChunk(m)
 		for _, ev := range events {
 			chunk := irEncodeOpenAIStreamChunk(ev, chatID, created, model, firstChunk)
 			if chunk != "" {

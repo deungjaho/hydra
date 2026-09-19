@@ -98,12 +98,6 @@ func irExtractUsage(geminiResp map[string]any) (prompt, completion, cached, thou
 	return irResp.Usage.Prompt, irResp.Usage.Completion, irResp.Usage.Cached, irResp.Usage.Thought
 }
 
-// irStreamGeminiChunk decodes a Gemini SSE chunk into IR stream events.
-// This is a thin wrapper around ir.DecodeGeminiStreamChunk.
-func irStreamGeminiChunk(chunk map[string]any) []ir.StreamEvent {
-	return ir.DecodeGeminiStreamChunk(chunk)
-}
-
 // irEncodeOpenAIStreamChunk wraps ir.EncodeOpenAIChatStreamChunk.
 func irEncodeOpenAIStreamChunk(ev ir.StreamEvent, chatID string, created int64, model string, isFirst bool) string {
 	return ir.EncodeOpenAIChatStreamChunk(ev, chatID, created, model, isFirst)

@@ -1643,7 +1643,7 @@ func TestMatrix_GeminiStream_TextDelta(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
@@ -1663,7 +1663,7 @@ func TestMatrix_GeminiStream_ThinkingDelta(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
@@ -1690,13 +1690,89 @@ func TestMatrix_GeminiStream_ToolCallDelta(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	// Should produce Delta + Done.
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
 	assertEqual(t, "events[0] type", events[0].Type, StreamToolCallDelta)
 	assertEqual(t, "events[1] type", events[1].Type, StreamToolCallDone)
+}
+
+func TestMatrix_GeminiStream_ParallelToolCallsAcrossChunks(t *testing.T) {
+	mkChunk := func(id, name string) map[string]any {
+		return map[string]any{
+			"response": map[string]any{
+				"candidates": []any{
+					map[string]any{
+						"content": map[string]any{
+							"parts": []any{
+								map[string]any{
+									"functionCall": map[string]any{
+										"name": name,
+										"args": map[string]any{},
+										"id":   id,
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	st := &GeminiStreamState{}
+	ev1 := st.DecodeChunk(mkChunk("call_1", "search"))
+	ev2 := st.DecodeChunk(mkChunk("call_2", "read"))
+	// Gemini delivers parallel calls in separate chunks; indices must
+	// accumulate across the stream, not restart per chunk.
+	assertEqual(t, "chunk1 index", ev1[0].ToolCall.Index, 0)
+	assertEqual(t, "chunk1 done index", ev1[1].ToolCall.Index, 0)
+	assertEqual(t, "chunk2 index", ev2[0].ToolCall.Index, 1)
+	assertEqual(t, "chunk2 done index", ev2[1].ToolCall.Index, 1)
+}
+
+func TestMatrix_GeminiStream_ToolCallsSameChunkAndInterleaved(t *testing.T) {
+	st := &GeminiStreamState{}
+	// Chunk 1: text part interleaved with two function calls in one parts[].
+	chunk1 := map[string]any{
+		"response": map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{"functionCall": map[string]any{"name": "a", "args": map[string]any{}, "id": "call_1"}},
+							map[string]any{"text": "let me call these"},
+							map[string]any{"functionCall": map[string]any{"name": "b", "args": map[string]any{}, "id": "call_2"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	// Chunk 2: a third call after a text-only interlude must continue the count.
+	chunk2 := map[string]any{
+		"response": map[string]any{
+			"candidates": []any{
+				map[string]any{
+					"content": map[string]any{
+						"parts": []any{
+							map[string]any{"functionCall": map[string]any{"name": "c", "args": map[string]any{}, "id": "call_3"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	evs1 := st.DecodeChunk(chunk1)
+	if len(evs1) != 5 {
+		t.Fatalf("events = %d, want 5 (delta+done ×2 + text)", len(evs1))
+	}
+	assertEqual(t, "call a index", evs1[0].ToolCall.Index, 0)
+	assertEqual(t, "interleaved text", evs1[2].Delta, "let me call these")
+	assertEqual(t, "call b index", evs1[3].ToolCall.Index, 1)
+	evs2 := st.DecodeChunk(chunk2)
+	assertEqual(t, "call c index", evs2[0].ToolCall.Index, 2)
 }
 
 func TestMatrix_GeminiStream_Usage(t *testing.T) {
@@ -1708,7 +1784,7 @@ func TestMatrix_GeminiStream_Usage(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
@@ -1727,7 +1803,7 @@ func TestMatrix_GeminiStream_Done(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
@@ -1751,7 +1827,7 @@ func TestMatrix_GeminiStream_Grounding(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	// Should have StreamDone + StreamWebSearch.
 	foundWebSearch := false
 	for _, ev := range events {
@@ -1872,7 +1948,7 @@ func TestMatrix_GeminiStream_MultiToolCallIndex(t *testing.T) {
 			},
 		},
 	}
-	events := DecodeGeminiStreamChunk(chunk)
+	events := (&GeminiStreamState{}).DecodeChunk(chunk)
 	// Expect 4 events: Delta+Done for call_a, Delta+Done for call_b.
 	if len(events) != 4 {
 		t.Fatalf("events = %d, want 4", len(events))
