@@ -18,19 +18,19 @@ import (
 // AnthropicStreamState is the state machine for converting Gemini SSE into
 // Anthropic SSE events.
 type AnthropicStreamState struct {
-	msgID           string
-	model           string
-	blockIndex      int
-	currentBlock    *anthropicBlockType
-	messageStartSet bool
-	stopped         bool
-	usedTool        bool
-	hasText         bool
-	hasThinking     bool
+	msgID              string
+	model              string
+	blockIndex         int
+	currentBlock       *anthropicBlockType
+	messageStartSet    bool
+	stopped            bool
+	usedTool           bool
+	hasText            bool
+	hasThinking        bool
 	accumulatedThought string
-	inputTokens     int64
-	outputTokens    int64
-	cachedTokens    int64
+	inputTokens        int64
+	outputTokens       int64
+	cachedTokens       int64
 }
 
 // NeedsStitch returns true if the stream ended with thoughts but produced
