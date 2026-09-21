@@ -62,6 +62,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		apiKeyID:      apiKeyID,
 		schedMode:     schedMode,
 		noSticky:      noSticky,
+		ctx:           r.Context(),
 		writeErr: func(status int, msg string) {
 			http.Error(w, msg, status)
 		},

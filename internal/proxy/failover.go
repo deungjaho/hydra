@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -26,6 +28,7 @@ type failoverConfig struct {
 	apiKeyID      *int64 // API key ID for logging
 	schedMode     config.SchedulingMode
 	noSticky      bool
+	ctx           context.Context // inbound client request context
 
 	// writeErr sends a protocol-specific error response to the client.
 	writeErr func(status int, msg string)
@@ -65,6 +68,9 @@ func (s *ProxyServer) failoverLoop(
 	accounts []*account.Account,
 	cfg failoverConfig,
 ) {
+	if cfg.ctx == nil {
+		cfg.ctx = context.Background()
+	}
 	tried := make(map[int64]bool)
 	locationFailures := 0
 	locationRetries := 0
@@ -147,9 +153,8 @@ func (s *ProxyServer) failoverLoop(
 		}
 
 		resp, err := SendRequest(
-			s.HTTP, accessToken, acc.ProjectID, bodyBytes, cfg.stream, acc.MachineID)
+			cfg.ctx, s.HTTP, accessToken, acc.ProjectID, bodyBytes, cfg.stream, acc.MachineID)
 		if err != nil {
-			log.Printf("upstream request failed: %v", err)
 			releaseOnce()
 			logErr(account.LogRequest(s.State.DB, account.LogRequestParams{
 				AccountID: &acc.ID,
@@ -158,8 +163,22 @@ func (s *ProxyServer) failoverLoop(
 				Error:    pstr(err.Error()),
 				APIKeyID: cfg.apiKeyID,
 			}))
-			cfg.writeErr(http.StatusBadGateway, "upstream request failed")
-			return
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// Client went away — nobody is listening for a reply.
+				return
+			}
+			// Transport failure (timeout, reset, TLS): treat like a retryable
+			// status — cool the account down, drop the sticky binding, and
+			// try the next account instead of returning 502.
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, cfg.mappedModel, cooldownRetryable)
+			logErr(account.MarkError(s.State.DB, acc.ID, err.Error(), false))
+			if cfg.sessionID != "" {
+				s.State.Sticky.Unbind(cfg.sessionID)
+			}
+			log.Printf("failover: account %s transport error for %s: %v, "+
+				"trying next", acc.Email, cfg.originalModel, err)
+			continue
 		}
 
 		// Retryable: 429 (quota) or 503 (capacity) → failover.

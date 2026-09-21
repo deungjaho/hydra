@@ -68,6 +68,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		apiKeyID:      apiKeyID,
 		schedMode:     schedMode,
 		noSticky:      noSticky,
+		ctx:           r.Context(),
 		writeErr: func(status int, msg string) {
 			http.Error(w, msg, status)
 		},
@@ -144,7 +145,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 				if !ok {
 					return nil
 				}
-				cResp, err := SendRequest(s.HTTP, accessToken, acc.ProjectID, bodyBytes, true, acc.MachineID)
+				cResp, err := SendRequest(r.Context(), s.HTTP, accessToken, acc.ProjectID, bodyBytes, true, acc.MachineID)
 				if err != nil || cResp.StatusCode != http.StatusOK {
 					if cResp != nil && cResp.Body != nil {
 						cResp.Body.Close()
@@ -242,7 +243,7 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 
 	upstreamBody := irEncodeGeminiRequest(anthropicReq, "anthropic", acc.ProjectID, sessionUUID, requestN)
 	bodyBytes, _ := json.Marshal(upstreamBody)
-	resp, err := SendRequest(s.HTTP, accessToken, acc.ProjectID, bodyBytes, false, acc.MachineID)
+	resp, err := SendRequest(r.Context(), s.HTTP, accessToken, acc.ProjectID, bodyBytes, false, acc.MachineID)
 	if err != nil {
 		http.Error(w, "upstream failed", http.StatusBadGateway)
 		return

@@ -9,8 +9,11 @@ const (
 	writeTimeout      = 600 * time.Second // long for streaming responses
 	maxHeaderBytes    = 1 << 20           // 1 MB
 
-	upstreamTimeout = 300 * time.Second // uTLS client for Gemini API
-	oauthTimeout    = 60 * time.Second  // OAuth/quota fetch
+	// upstreamHeaderTimeout bounds waiting for upstream response headers.
+	// Streaming bodies are intentionally unbounded (they can legitimately
+	// run for minutes); a hung upstream never sends headers.
+	upstreamHeaderTimeout = 90 * time.Second
+	oauthTimeout          = 60 * time.Second // OAuth/quota fetch
 	minProbeTimeout = 5 * time.Second
 	defProbeTimeout = 15 * time.Second
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 
 	"github.com/deungjaho/hydra/internal/account"
@@ -148,6 +149,8 @@ func (s *ProxyServer) streamAnthropicSSEIR(
 	// If the model output only thoughts and no text or tool calls, attempt
 	// transparent continuation stitching.
 	if state.NeedsStitch() && stitchFn != nil {
+		log.Printf("stitch: %s on account %d ended thinking-only, requesting continuation",
+			model, accountID)
 		if nextBody := stitchFn(state); nextBody != nil {
 			consumeStream(nextBody)
 			nextBody.Close()

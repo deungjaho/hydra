@@ -43,7 +43,15 @@ func irEncodeGeminiRequest(req map[string]any, protocol, projectID, sessionID st
 	// Apply thinking config for thinking models.
 	if isThinkingModel(mappedModel) {
 		budget := thinkingBudgetFor(mappedModel, reasoningEffortFromIR(irReq))
-		if budget >= irReq.MaxTokens {
+		// A client-provided budget_tokens already accounts for its own
+		// output reserve — prefer it over the effort-derived mapping.
+		if irReq.Reasoning != nil && irReq.Reasoning.BudgetTokens > 0 {
+			budget = irReq.Reasoning.BudgetTokens
+		}
+		// budget <= 0 means "dynamic" (e.g. -1): upstream would let thinking
+		// consume the entire output budget, ending the turn thoughts-only.
+		// Clamp so visible output always has room.
+		if budget <= 0 || budget >= irReq.MaxTokens {
 			if irReq.MaxTokens > 384 {
 				budget = irReq.MaxTokens - 256
 			} else if irReq.MaxTokens > 256 {

@@ -34,7 +34,7 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 	return &ProxyServer{
 		Config:   cfg,
 		State:    state,
-		HTTP:     NewUTLSClient(upstreamTimeout, cfg.Proxy.UpstreamProxy),
+		HTTP:     NewUTLSClient(cfg.Proxy.UpstreamProxy),
 		OAuth:    NewHTTPClient(oauthTimeout, cfg.Proxy.UpstreamProxy),
 		Probe:    NewHTTPClient(probeTimeout, cfg.Proxy.UpstreamProxy),
 		Registry: registry.New(),

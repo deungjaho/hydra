@@ -67,6 +67,7 @@ func (s *ProxyServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		apiKeyID:      apiKeyID,
 		schedMode:     schedMode,
 		noSticky:      noSticky,
+		ctx:           r.Context(),
 		writeErr: func(status int, msg string) {
 			writeJSON(w, status, responsesErrorBody(status, msg))
 		},

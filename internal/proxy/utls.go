@@ -26,10 +26,9 @@ import (
 // If proxyURL is non-empty (e.g. "http://127.0.0.1:7890"), upstream TLS
 // connections tunnel through the proxy via HTTP CONNECT, then perform the
 // uTLS handshake over the tunnelled raw stream.
-func NewUTLSClient(timeout time.Duration, proxyURL string) *http.Client {
+func NewUTLSClient(proxyURL string) *http.Client {
 	return &http.Client{
 		Transport: newUTLSTransport(proxyURL),
-		Timeout:   timeout,
 	}
 }
 
@@ -77,6 +76,11 @@ func newUTLSTransport(proxyURL string) *utlsTransport {
 			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 				return dialer.dialTLS(ctx, addr)
 			},
+			// Ping the connection after 30s of no frames; drop it if no pong
+			// arrives within 15s. This turns a silently dead connection into
+			// stream errors instead of hanging pending requests forever.
+			ReadIdleTimeout: 30 * time.Second,
+			PingTimeout:     15 * time.Second,
 		},
 	}
 

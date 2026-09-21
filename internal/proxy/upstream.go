@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/deungjaho/hydra/internal/version"
 	"github.com/google/uuid"
@@ -26,6 +29,10 @@ func UpstreamURL(stream bool) string {
 
 // SendRequest sends a request to the upstream and returns the raw response.
 //
+// ctx is the inbound client request context: if the client disconnects or
+// times out, the upstream request is cancelled and its h2 stream slot is
+// freed instead of starving the shared connection.
+//
 // machineID is the per-account machine identifier (persisted in DB). Pass
 // an empty string to generate a random one (for backwards compatibility).
 //
@@ -36,14 +43,14 @@ func UpstreamURL(stream bool) string {
 // API-enabled check.
 //
 // The caller is responsible for closing resp.Body.
-func SendRequest(client *http.Client, accessToken, projectID string, body []byte, stream bool, machineID string) (*http.Response, error) {
+func SendRequest(ctx context.Context, client *http.Client, accessToken, projectID string, body []byte, stream bool, machineID string) (*http.Response, error) {
 	urlStr := UpstreamURL(stream)
 	if machineID == "" {
 		machineID = newMachineID()
 	}
 	sessionID := newSessionID()
 
-	resp, err := doSend(client, urlStr, accessToken, projectID, body, machineID, sessionID, true)
+	resp, err := doSend(ctx, client, urlStr, accessToken, projectID, body, machineID, sessionID, true)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +58,7 @@ func SendRequest(client *http.Client, accessToken, projectID string, body []byte
 		// Drain and close the first response before retrying.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
-		resp2, err := doSend(client, urlStr, accessToken, projectID, body, machineID, sessionID, false)
+		resp2, err := doSend(ctx, client, urlStr, accessToken, projectID, body, machineID, sessionID, false)
 		if err != nil {
 			return nil, err
 		}
@@ -61,14 +68,17 @@ func SendRequest(client *http.Client, accessToken, projectID string, body []byte
 }
 
 func doSend(
+	ctx context.Context,
 	client *http.Client,
 	urlStr, accessToken, projectID string,
 	body []byte,
 	machineID, sessionID string,
 	includeProjectHeader bool,
 ) (*http.Response, error) {
-	req, err := http.NewRequest("POST", urlStr, bytes.NewReader(body))
+	reqCtx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(reqCtx, "POST", urlStr, bytes.NewReader(body))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
@@ -83,7 +93,47 @@ func doSend(
 	if includeProjectHeader && projectID != "" && projectID != "test-project" && projectID != "project-id" {
 		req.Header.Set("x-goog-user-project", projectID)
 	}
-	return client.Do(req)
+
+	// Bound the wait for response headers only. The whole-body timeout on
+	// http.Client would also kill healthy long-running SSE streams; a hung
+	// upstream that never sends headers is the actual failure mode.
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		resp, err := client.Do(req)
+		ch <- result{resp, err}
+	}()
+	timer := time.NewTimer(upstreamHeaderTimeout)
+	defer timer.Stop()
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			cancel()
+			return nil, res.err
+		}
+		res.resp.Body = &cancelOnClose{ReadCloser: res.resp.Body, cancel: cancel}
+		return res.resp, nil
+	case <-timer.C:
+		cancel()
+		<-ch
+		return nil, fmt.Errorf("upstream response headers timeout (%s)", upstreamHeaderTimeout)
+	}
+}
+
+// cancelOnClose closes the body and cancels the request context so the
+// upstream stream slot is released even if the caller leaves early.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // newMachineID generates a random uppercase UUID for the x-machine-id header.
