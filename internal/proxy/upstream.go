@@ -84,10 +84,6 @@ func doSend(
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-client-name", "antigravity")
-	req.Header.Set("x-client-version", version.ClientVersion())
-	req.Header.Set("x-machine-id", machineID)
-	req.Header.Set("x-vscode-sessionid", sessionID)
 
 	if includeProjectHeader && projectID != "" && projectID != "test-project" && projectID != "project-id" {
 		req.Header.Set("x-goog-user-project", projectID)

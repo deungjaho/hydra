@@ -8,21 +8,41 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"strconv"
 	"strings"
+	"time"
+
+	"github.com/google/uuid"
 )
+
+func toAgySessionID(s string) string {
+	if s == "" {
+		s = uuid.NewString()
+	}
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return s
+	}
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	val := int64(h.Sum64())
+	if val > 0 {
+		val = -val
+	}
+	return strconv.FormatInt(val, 10)
+}
 
 // EncodeGeminiRequest transforms an IR Request into the AGY v1internal
 // request envelope. The envelope wraps a generateContent body with
 // project, request metadata, and client identity headers.
-//
-// projectID, sessionID, and requestN are used for the AGY envelope
-// metadata. The caller is responsible for setting HTTP headers
-// (User-Agent, x-client-version, x-machine-id, etc.) separately.
 func EncodeGeminiRequest(req *Request, projectID, sessionID string, requestN uint64) map[string]any {
 	body := encodeGeminiBody(req)
-	body["sessionId"] = sessionID
+	if sessionID == "" {
+		sessionID = uuid.NewString()
+	}
+	body["sessionId"] = toAgySessionID(sessionID)
 	body["labels"] = map[string]any{
-		"last_step_index":          "0",
+		"last_step_index":          fmt.Sprintf("%d", requestN),
 		"model_enum":               "MODEL_PLACEHOLDER_M318",
 		"request_id":               fmt.Sprintf("%s-%d", sessionID, requestN),
 		"trajectory_id":            sessionID,
@@ -30,14 +50,14 @@ func EncodeGeminiRequest(req *Request, projectID, sessionID string, requestN uin
 		"used_claude_conservative": "false",
 		"used_non_gemini_model":    "false",
 	}
+	nowMs := time.Now().UnixMilli()
 	return map[string]any{
-		"project":            projectID,
-		"request":            body,
-		"model":              req.Model,
-		"userAgent":          "antigravity",
-		"requestType":        "agent",
-		"enabledCreditTypes": []string{"GOOGLE_ONE_AI"},
-		"requestId":          fmt.Sprintf("agent/antigravity/%s/%d", sessionID, requestN),
+		"project":     projectID,
+		"request":     body,
+		"model":       req.Model,
+		"userAgent":   "antigravity",
+		"requestType": "agent",
+		"requestId":   fmt.Sprintf("agent/%s/%d/%s/%d", uuid.NewString(), nowMs, sessionID, requestN),
 	}
 }
 
@@ -71,36 +91,38 @@ func encodeGeminiBody(req *Request) map[string]any {
 		body["contents"] = contents
 	}
 
-	// Generation config.
+	// Generation config matching native agy-cli.
 	genConfig := map[string]any{}
-	// Defaults matching Antigravity desktop client behavior.
-	temp := 1.0
 	if req.Temperature != nil {
-		temp = *req.Temperature
+		genConfig["temperature"] = *req.Temperature
 	}
-	genConfig["temperature"] = temp
-	topP := 1.0
 	if req.TopP != nil {
-		topP = *req.TopP
+		genConfig["topP"] = *req.TopP
 	}
-	genConfig["topP"] = topP
-	topK := int64(40)
 	if req.TopK != nil {
-		topK = *req.TopK
+		genConfig["topK"] = *req.TopK
 	}
-	genConfig["topK"] = topK
 	if req.MaxTokens > 0 {
 		genConfig["maxOutputTokens"] = req.MaxTokens
+	} else {
+		genConfig["maxOutputTokens"] = 65536
 	}
 	if len(req.StopSequences) > 0 {
 		genConfig["stopSequences"] = req.StopSequences
 	}
 	if req.Reasoning != nil {
 		thinkConfig := map[string]any{"includeThoughts": true}
-		if req.Reasoning.BudgetTokens > 0 {
+		if req.Reasoning.BudgetTokens != 0 {
 			thinkConfig["thinkingBudget"] = req.Reasoning.BudgetTokens
+		} else {
+			thinkConfig["thinkingBudget"] = -1
 		}
 		genConfig["thinkingConfig"] = thinkConfig
+	} else {
+		genConfig["thinkingConfig"] = map[string]any{
+			"includeThoughts": true,
+			"thinkingBudget":  -1,
+		}
 	}
 	if req.ResponseFormat != nil {
 		switch req.ResponseFormat.Type {
