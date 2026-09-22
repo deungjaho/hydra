@@ -113,9 +113,12 @@ func (t *utlsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	// If h2 fails (e.g. server only supports HTTP/1.1), fall back.
-	// http2.Transport returns an error like "http2: server sent GOAWAY"
-	// or connection errors. We retry with HTTP/1.1.
-	// Note: this creates a new connection, but that's acceptable.
+	// Reset request body if possible, since h2 transport may have consumed it.
+	if req.GetBody != nil {
+		if body, bodyErr := req.GetBody(); bodyErr == nil {
+			req.Body = body
+		}
+	}
 	return t.h1transport.RoundTrip(req)
 }
 

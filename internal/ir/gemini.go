@@ -21,6 +21,15 @@ import (
 func EncodeGeminiRequest(req *Request, projectID, sessionID string, requestN uint64) map[string]any {
 	body := encodeGeminiBody(req)
 	body["sessionId"] = sessionID
+	body["labels"] = map[string]any{
+		"last_step_index":          "0",
+		"model_enum":               "MODEL_PLACEHOLDER_M318",
+		"request_id":               fmt.Sprintf("%s-%d", sessionID, requestN),
+		"trajectory_id":            sessionID,
+		"used_claude":              "false",
+		"used_claude_conservative": "false",
+		"used_non_gemini_model":    "false",
+	}
 	return map[string]any{
 		"project":            projectID,
 		"request":            body,
@@ -41,6 +50,7 @@ func encodeGeminiBody(req *Request) map[string]any {
 	// System instruction.
 	if req.System != "" {
 		body["systemInstruction"] = map[string]any{
+			"role": "user",
 			"parts": []any{
 				map[string]any{"text": req.System},
 			},

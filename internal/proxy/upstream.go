@@ -14,7 +14,7 @@ import (
 )
 
 // Antigravity v1internal upstream base (sandbox used by the desktop app).
-const v1InternalBase = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal"
+const v1InternalBase = "https://daily-cloudcode-pa.googleapis.com/v1internal"
 
 // UpstreamURL builds the upstream URL for a generateContent call.
 // v1internal uses `{base}:{method}` format (model is passed in the body).
@@ -88,7 +88,6 @@ func doSend(
 	req.Header.Set("x-client-version", version.ClientVersion())
 	req.Header.Set("x-machine-id", machineID)
 	req.Header.Set("x-vscode-sessionid", sessionID)
-	req.Header.Set("anthropic-beta", "claude-code-20250219")
 
 	if includeProjectHeader && projectID != "" && projectID != "test-project" && projectID != "project-id" {
 		req.Header.Set("x-goog-user-project", projectID)

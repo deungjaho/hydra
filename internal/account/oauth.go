@@ -40,7 +40,7 @@ const (
 	oauthTokenURL            = "https://oauth2.googleapis.com/token"
 	oauthDeviceCodeURL       = "https://oauth2.googleapis.com/device/code"
 	oauthUserInfoURL         = "https://www.googleapis.com/oauth2/v2/userinfo"
-	loadCodeAssistURL        = "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist"
+	loadCodeAssistURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 	oauthRedirectURI         = "http://localhost"
 	oauthRefreshSkew   int64 = 900
 )
