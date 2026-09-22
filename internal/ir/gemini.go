@@ -126,11 +126,31 @@ func encodeGeminiBody(req *Request) map[string]any {
 		var toolsList []any
 		for _, tool := range req.Tools {
 			if tool.Kind == ToolWebSearch {
-				// Gemini google_search is a server-side tool that
-				// executes the search and returns grounded results.
-				// It must be a separate entry in the tools array,
-				// not a functionDeclaration.
-				toolsList = append(toolsList, map[string]any{"google_search": map[string]any{}})
+				if len(req.Tools) == 1 {
+					toolsList = append(toolsList, map[string]any{"google_search": map[string]any{}})
+					continue
+				}
+				// When mixed with other function declarations, Gemini rejects built-in
+				// tools. Encode as a client-side functionDeclaration instead.
+				if tool.Name == "" {
+					tool.Name = "web_search"
+				}
+				if tool.Description == "" {
+					tool.Description = "Search the web for up-to-date information"
+				}
+				if tool.Schema == nil {
+					tool.Schema = map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"query": map[string]any{
+								"type":        "string",
+								"description": "The search query to execute",
+							},
+						},
+						"required": []string{"query"},
+					}
+				}
+				funcDecls = append(funcDecls, encodeGeminiTool(tool))
 				continue
 			}
 			funcDecls = append(funcDecls, encodeGeminiTool(tool))

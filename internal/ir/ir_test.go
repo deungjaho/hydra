@@ -1557,19 +1557,13 @@ func TestEncodeGeminiRequest_WebSearchTool(t *testing.T) {
 	}
 	body := encodeGeminiBody(req)
 	tools, ok := body["tools"].([]any)
-	if !ok || len(tools) != 2 {
-		t.Fatalf("tools = %v, want 2 entries", body["tools"])
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v, want 1 entry (functionDeclarations)", body["tools"])
 	}
-	// First entry should be google_search.
 	first, _ := tools[0].(map[string]any)
-	if _, ok := first["google_search"]; !ok {
-		t.Errorf("first tool entry = %v, want google_search", first)
-	}
-	// Second entry should be functionDeclarations.
-	second, _ := tools[1].(map[string]any)
-	funcDecls, _ := second["functionDeclarations"].([]any)
-	if len(funcDecls) != 1 {
-		t.Errorf("functionDeclarations = %d, want 1", len(funcDecls))
+	funcDecls, _ := first["functionDeclarations"].([]any)
+	if len(funcDecls) != 2 {
+		t.Errorf("functionDeclarations = %d, want 2", len(funcDecls))
 	}
 }
 
