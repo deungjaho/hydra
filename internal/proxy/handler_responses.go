@@ -5,9 +5,11 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/account"
+	"github.com/google/uuid"
 )
 
 func (s *ProxyServer) handleResponses(w http.ResponseWriter, r *http.Request) {
@@ -84,8 +86,79 @@ func (s *ProxyServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 			// Streaming success.
 			respID := "resp_" + compactUUID()
 			created := time.Now().Unix()
+
+			stitchFn := func(st *responsesStreamState) io.ReadCloser {
+				reasoning := st.LastReasoning()
+				if reasoning == "" {
+					return nil
+				}
+				// Clone the original request and append a synthetic assistant message
+				// plus a synthetic user prompt asking the model to continue.
+				newReq := make(map[string]any, len(responsesReq)+2)
+				for k, v := range responsesReq {
+					newReq[k] = v
+				}
+
+				var newInputs []any
+				if origInputArr, ok := responsesReq["input"].([]any); ok {
+					newInputs = append(newInputs, origInputArr...)
+				} else if origInputStr, ok := responsesReq["input"].(string); ok {
+					newInputs = append(newInputs, map[string]any{
+						"type": "message",
+						"role": "user",
+						"content": []any{
+							map[string]any{"type": "input_text", "text": origInputStr},
+						},
+					})
+				}
+
+				newInputs = append(newInputs, map[string]any{
+					"type": "message",
+					"role": "assistant",
+					"content": []any{
+						map[string]any{"type": "output_text", "text": "..."},
+					},
+				})
+				newInputs = append(newInputs, map[string]any{
+					"type": "message",
+					"role": "user",
+					"content": []any{
+						map[string]any{"type": "input_text", "text": "Continue and execute the plan."},
+					},
+				})
+				newReq["input"] = newInputs
+
+				sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+				requestN := s.State.NextRequestN()
+				effectiveModel := mappedModel
+				if avail := acc.AvailableModels(); len(avail) > 0 {
+					effectiveModel = ResolveModelForAccount(mappedModel, avail)
+				}
+				upBody := irEncodeGeminiRequest(newReq, "responses", acc.ProjectID, sessionUUID, requestN)
+				upBody["model"] = effectiveModel
+				bodyBytes, err := json.Marshal(upBody)
+				if err != nil {
+					log.Printf("stitch marshal failed: %v", err)
+					return nil
+				}
+				accessToken, ok := s.ensureFreshToken(
+					acc, mappedModel, originalModel, clientIP, apiKeyID, w)
+				if !ok {
+					return nil
+				}
+				cResp, err := SendRequest(r.Context(), s.HTTP, accessToken, acc.ProjectID, bodyBytes, true, acc.MachineID)
+				if err != nil || cResp.StatusCode != http.StatusOK {
+					if cResp != nil && cResp.Body != nil {
+						cResp.Body.Close()
+					}
+					log.Printf("stitch request failed: %v", err)
+					return nil
+				}
+				return cResp.Body
+			}
+
 			s.streamResponsesSSEIR(w, resp.Body, respID, created,
-				originalModel, acc.ID, apiKeyID, clientIP)
+				originalModel, acc.ID, apiKeyID, clientIP, stitchFn)
 			resp.Body.Close()
 		},
 		handleSuccessNonStream: func(w http.ResponseWriter, resp *http.Response, acc *account.Account) {

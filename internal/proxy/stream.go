@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
@@ -27,6 +28,7 @@ func (s *ProxyServer) streamResponsesSSE(
 	accountID int64,
 	apiKeyID *int64,
 	clientIP string,
+	stitchFn func(st *responsesStreamState) io.ReadCloser,
 ) {
 	flusher, _ := w.(http.Flusher)
 	setSSEHeaders(w)
@@ -34,31 +36,45 @@ func (s *ProxyServer) streamResponsesSSE(
 		flusher.Flush()
 	}
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
 	st := newResponsesStreamState(respID, model, created)
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimSpace(line[len("data: "):])
-		if data == "" {
-			continue
-		}
-		var geminiJSON map[string]any
-		if err := json.Unmarshal([]byte(data), &geminiJSON); err != nil {
-			continue
-		}
-		inner := innerResponse(geminiJSON)
-		events := st.processGeminiChunk(inner)
-		if events != "" {
-			_, _ = io.WriteString(w, events)
-			if flusher != nil {
-				flusher.Flush()
+	consumeStream := func(reader io.Reader) {
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
 			}
+			data := strings.TrimSpace(line[len("data: "):])
+			if data == "" {
+				continue
+			}
+			var geminiJSON map[string]any
+			if err := json.Unmarshal([]byte(data), &geminiJSON); err != nil {
+				continue
+			}
+			inner := innerResponse(geminiJSON)
+			events := st.processGeminiChunk(inner)
+			if events != "" {
+				_, _ = io.WriteString(w, events)
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		}
+	}
+
+	consumeStream(body)
+
+	// If the model output only reasoning and no text or tool calls, attempt
+	// transparent continuation stitching.
+	if st.NeedsStitch() && stitchFn != nil {
+		log.Printf("stitch: responses %s on account %d ended reasoning-only, requesting continuation",
+			model, accountID)
+		if nextBody := stitchFn(st); nextBody != nil {
+			consumeStream(nextBody)
+			nextBody.Close()
 		}
 	}
 

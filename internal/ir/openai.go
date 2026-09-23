@@ -87,10 +87,11 @@ func DecodeOpenAIChat(req map[string]any) *Request {
 			}
 		}
 		if m.Role == "system" || m.Role == "developer" {
+			text := SanitizeSystemPrompt(m.Content[0].Text)
 			if r.System == "" {
-				r.System = m.Content[0].Text
+				r.System = text
 			} else {
-				r.System += "\n" + m.Content[0].Text
+				r.System += "\n" + text
 			}
 			continue
 		}

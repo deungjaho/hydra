@@ -7,7 +7,6 @@ package ir
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // DecodeAnthropic transforms an Anthropic Messages API request into IR.
@@ -47,7 +46,7 @@ func DecodeAnthropic(req map[string]any) *Request {
 
 	// System prompt (string or array of text blocks).
 	if sys, ok := req["system"].(string); ok {
-		r.System = sanitizeAnthropicSystemPrompt(sys)
+		r.System = SanitizeSystemPrompt(sys)
 	} else if sysArr, ok := req["system"].([]any); ok {
 		var parts []string
 		for _, blockAny := range sysArr {
@@ -57,7 +56,7 @@ func DecodeAnthropic(req map[string]any) *Request {
 			}
 			if bt, _ := block["type"].(string); bt == "text" {
 				if t, ok := block["text"].(string); ok {
-					clean := sanitizeAnthropicSystemPrompt(t)
+					clean := SanitizeSystemPrompt(t)
 					if clean != "" {
 						parts = append(parts, clean)
 					}
@@ -644,23 +643,5 @@ func sseEvent(eventType string, data any) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(b))
 }
 
-func isAnthropicSignature(s string) bool {
-	return strings.Contains(s, "x-anthropic-billing-header:") ||
-		strings.Contains(s, "Anthropic's Claude Agent SDK") ||
-		strings.Contains(s, "Claude Agent SDK")
-}
 
-func sanitizeAnthropicSystemPrompt(s string) string {
-	if !isAnthropicSignature(s) {
-		return s
-	}
-	lines := strings.Split(s, "\n")
-	var kept []string
-	for _, line := range lines {
-		if !isAnthropicSignature(line) {
-			kept = append(kept, line)
-		}
-	}
-	return strings.Join(kept, "\n")
-}
 

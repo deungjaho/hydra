@@ -333,6 +333,7 @@ type responsesStreamState struct {
 	accumulatedText   string // accumulated text deltas
 	accumulatedReason string // accumulated reasoning summary
 	outputItems       []any  // accumulated output items for completed event
+	hasToolCall       bool
 
 	// Usage
 	totalPrompt, totalCompletion, totalCached, totalThought int64
@@ -354,6 +355,18 @@ func newResponsesStreamState(respID, model string, created int64) *responsesStre
 func (st *responsesStreamState) nextSeq() int64 {
 	st.seq++
 	return st.seq
+}
+
+// NeedsStitch returns true if the stream produced reasoning but neither text nor tool calls.
+// In this state, a Responses API client (like Codex) would end the turn without performing any action,
+// so the proxy should transparently request continuation.
+func (st *responsesStreamState) NeedsStitch() bool {
+	return st.accumulatedReason != "" && st.accumulatedText == "" && !st.hasToolCall
+}
+
+// LastReasoning returns the accumulated reasoning text.
+func (st *responsesStreamState) LastReasoning() string {
+	return st.accumulatedReason
 }
 
 // startMessage ensures response.created and the message output item exist.
@@ -777,6 +790,7 @@ func (st *responsesStreamState) processGeminiChunk(inner map[string]any) string 
 			name, _ := fc["name"].(string)
 			args, _ := json.Marshal(fc["args"])
 			callID, _ := fc["id"].(string)
+			st.hasToolCall = true
 			if callID == "" {
 				callID = "fc_" + compactUUID()
 			}

@@ -72,7 +72,7 @@ func encodeGeminiBody(req *Request) map[string]any {
 		body["systemInstruction"] = map[string]any{
 			"role": "user",
 			"parts": []any{
-				map[string]any{"text": req.System},
+				map[string]any{"text": SanitizeSystemPrompt(req.System)},
 			},
 		}
 	}
@@ -233,7 +233,7 @@ func encodeGeminiMessage(msg Message) map[string]any {
 func encodeGeminiPart(c Content) map[string]any {
 	switch c.Type {
 	case ContentText:
-		return map[string]any{"text": c.Text}
+		return map[string]any{"text": SanitizeSystemPrompt(c.Text)}
 
 	case ContentThinking:
 		// strip thought parts from model turns: Code Assist requires thought_signature when
@@ -738,6 +738,22 @@ type GeminiStreamState struct {
 	// the index must accumulate across the whole stream rather than
 	// restart per chunk.
 	toolCallIdx int
+	hasThinking bool
+	hasText     bool
+	usedTool    bool
+	lastThought string
+}
+
+// NeedsStitch returns true if the stream ended with thoughts but produced
+// neither text nor tool calls. In this state, an Agent client would stall
+// on an empty turn, so the proxy should transparently request continuation.
+func (s *GeminiStreamState) NeedsStitch() bool {
+	return s.hasThinking && !s.hasText && !s.usedTool
+}
+
+// LastThinking returns the accumulated thinking text.
+func (s *GeminiStreamState) LastThinking() string {
+	return s.lastThought
 }
 
 // DecodeChunk decodes one Gemini SSE chunk into zero or more IR stream
@@ -771,6 +787,17 @@ func (s *GeminiStreamState) DecodeChunk(chunk map[string]any) []StreamEvent {
 						continue
 					}
 					evs := decodeGeminiPartToStream(part, s.toolCallIdx)
+					for _, ev := range evs {
+						switch ev.Type {
+						case StreamThinkingDelta:
+							s.hasThinking = true
+							s.lastThought += ev.Delta
+						case StreamTextDelta:
+							s.hasText = true
+						case StreamToolCallDelta, StreamToolCallDone:
+							s.usedTool = true
+						}
+					}
 					if _, ok := part["functionCall"].(map[string]any); ok {
 						s.toolCallIdx++
 					}

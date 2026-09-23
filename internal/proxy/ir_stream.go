@@ -23,6 +23,7 @@ func (s *ProxyServer) streamOpenAISSEIR(
 	accountID int64,
 	apiKeyID *int64,
 	clientIP string,
+	stitchFn func(gstate *ir.GeminiStreamState) io.ReadCloser,
 ) {
 	flusher, _ := w.(http.Flusher)
 	setSSEHeaders(w)
@@ -30,47 +31,61 @@ func (s *ProxyServer) streamOpenAISSEIR(
 		flusher.Flush()
 	}
 
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-
 	firstChunk := true
 	gstate := &ir.GeminiStreamState{}
 	var totalPrompt, totalCompletion, totalCached, totalThought int64
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		m := irParseGeminiSSELine(line)
-		if m == nil {
-			continue
-		}
-		// Extract usage from the raw Gemini chunk before IR decoding,
-		// since IR DecodeGeminiStreamChunk may not emit a usage event.
-		inner := innerResponse(m)
-		if usage, ok := inner["usageMetadata"].(map[string]any); ok {
-			if v := int64Or(usage, "promptTokenCount", 0); v != 0 {
-				totalPrompt = v
+	consumeStream := func(reader io.Reader) {
+		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			m := irParseGeminiSSELine(line)
+			if m == nil {
+				continue
 			}
-			if v := int64Or(usage, "candidatesTokenCount", 0); v != 0 {
-				totalCompletion = v
-			}
-			if v := int64Or(usage, "cachedContentTokenCount", 0); v != 0 {
-				totalCached = v
-			}
-			if v := int64Or(usage, "thoughtsTokenCount", 0); v != 0 {
-				totalThought = v
-			}
-		}
-
-		events := gstate.DecodeChunk(m)
-		for _, ev := range events {
-			chunk := irEncodeOpenAIStreamChunk(ev, chatID, created, model, firstChunk)
-			if chunk != "" {
-				firstChunk = false
-				_, _ = io.WriteString(w, chunk)
-				if flusher != nil {
-					flusher.Flush()
+			// Extract usage from the raw Gemini chunk before IR decoding,
+			// since IR DecodeGeminiStreamChunk may not emit a usage event.
+			inner := innerResponse(m)
+			if usage, ok := inner["usageMetadata"].(map[string]any); ok {
+				if v := int64Or(usage, "promptTokenCount", 0); v != 0 {
+					totalPrompt = v
+				}
+				if v := int64Or(usage, "candidatesTokenCount", 0); v != 0 {
+					totalCompletion = v
+				}
+				if v := int64Or(usage, "cachedContentTokenCount", 0); v != 0 {
+					totalCached = v
+				}
+				if v := int64Or(usage, "thoughtsTokenCount", 0); v != 0 {
+					totalThought = v
 				}
 			}
+
+			events := gstate.DecodeChunk(m)
+			for _, ev := range events {
+				chunk := irEncodeOpenAIStreamChunk(ev, chatID, created, model, firstChunk)
+				if chunk != "" {
+					firstChunk = false
+					_, _ = io.WriteString(w, chunk)
+					if flusher != nil {
+						flusher.Flush()
+					}
+				}
+			}
+		}
+	}
+
+	consumeStream(body)
+
+	// If the model output only thoughts and no text or tool calls, attempt
+	// transparent continuation stitching.
+	if gstate.NeedsStitch() && stitchFn != nil {
+		log.Printf("stitch: openai %s on account %d ended thinking-only, requesting continuation",
+			model, accountID)
+		if nextBody := stitchFn(gstate); nextBody != nil {
+			consumeStream(nextBody)
+			nextBody.Close()
 		}
 	}
 
@@ -192,9 +207,10 @@ func (s *ProxyServer) streamResponsesSSEIR(
 	accountID int64,
 	apiKeyID *int64,
 	clientIP string,
+	stitchFn func(st *responsesStreamState) io.ReadCloser,
 ) {
 	// Delegate to the existing implementation for now.
-	s.streamResponsesSSE(w, body, respID, created, model, accountID, apiKeyID, clientIP)
+	s.streamResponsesSSE(w, body, respID, created, model, accountID, apiKeyID, clientIP, stitchFn)
 }
 
 // jsonMarshal is a helper to avoid importing json in multiple places.

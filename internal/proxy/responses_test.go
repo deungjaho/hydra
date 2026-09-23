@@ -244,6 +244,52 @@ func TestResponsesStreamState_ReasoningThenText(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamState_NeedsStitch(t *testing.T) {
+	st := newResponsesStreamState("resp_test", "gemini-3-flash", 1000)
+
+	// Initially empty -> no stitch needed
+	if st.NeedsStitch() {
+		t.Error("initially NeedsStitch should be false")
+	}
+
+	// First chunk: reasoning only
+	inner1 := map[string]any{
+		"candidates": []any{
+			map[string]any{
+				"content": map[string]any{
+					"parts": []any{
+						map[string]any{"text": "Let me think...", "thought": true},
+					},
+				},
+			},
+		},
+	}
+	st.processGeminiChunk(inner1)
+	if !st.NeedsStitch() {
+		t.Error("after reasoning-only chunk, NeedsStitch should be true")
+	}
+	if st.LastReasoning() != "Let me think..." {
+		t.Errorf("LastReasoning got %q, want %q", st.LastReasoning(), "Let me think...")
+	}
+
+	// Second chunk: text produced -> NeedsStitch should turn false
+	inner2 := map[string]any{
+		"candidates": []any{
+			map[string]any{
+				"content": map[string]any{
+					"parts": []any{
+						map[string]any{"text": "Actual answer"},
+					},
+				},
+			},
+		},
+	}
+	st.processGeminiChunk(inner2)
+	if st.NeedsStitch() {
+		t.Error("after text chunk, NeedsStitch should be false")
+	}
+}
+
 func TestResponsesStreamState_FunctionCall(t *testing.T) {
 	st := newResponsesStreamState("resp_test", "gemini-3-flash", 1000)
 

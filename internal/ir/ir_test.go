@@ -1747,3 +1747,29 @@ func TestRoundTrip_AnthropicWebSearchToGeminiToAnthropic(t *testing.T) {
 		t.Error("web_search_tool_result block not found in Anthropic response")
 	}
 }
+
+func TestSanitizeSystemPrompt(t *testing.T) {
+	// Codex prompt removal
+	codexPrompt := "You are Codex, a coding agent based on GPT-5. You and the user share one workspace."
+	cleaned := SanitizeSystemPrompt(codexPrompt)
+	if strings.Contains(cleaned, "GPT-5") || strings.Contains(cleaned, "You are Codex") {
+		t.Errorf("SanitizeSystemPrompt should completely strip Codex preamble, got %q", cleaned)
+	}
+	if !strings.Contains(cleaned, "You and the user share one workspace.") {
+		t.Errorf("SanitizeSystemPrompt should preserve remaining text, got %q", cleaned)
+	}
+
+	// Anthropic prompt sanitization
+	anthropicPrompt := "You are a helpful assistant.\nx-anthropic-billing-header: test\nAnthropic's Claude Agent SDK is great.\nFinish cleanly."
+	cleanedAnthropic := SanitizeSystemPrompt(anthropicPrompt)
+	if strings.Contains(cleanedAnthropic, "billing-header") {
+		t.Errorf("billing header should be stripped, got %q", cleanedAnthropic)
+	}
+	if strings.Contains(cleanedAnthropic, "Claude Agent SDK") {
+		t.Errorf("SDK reference should be stripped, got %q", cleanedAnthropic)
+	}
+	if !strings.Contains(cleanedAnthropic, "Finish cleanly.") {
+		t.Errorf("non-signature content should be preserved, got %q", cleanedAnthropic)
+	}
+}
+

@@ -5,9 +5,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/account"
+	"github.com/deungjaho/hydra/internal/ir"
+	"github.com/google/uuid"
 )
 
 func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -80,8 +83,60 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 			// Streaming success.
 			chatID := "chatcmpl-" + compactUUID()
 			created := time.Now().Unix()
+
+			stitchFn := func(gstate *ir.GeminiStreamState) io.ReadCloser {
+				thought := gstate.LastThinking()
+				if thought == "" {
+					return nil
+				}
+				newReq := make(map[string]any, len(openaiReq)+2)
+				for k, v := range openaiReq {
+					newReq[k] = v
+				}
+				origMsgs, _ := openaiReq["messages"].([]any)
+				newMsgs := make([]any, 0, len(origMsgs)+2)
+				newMsgs = append(newMsgs, origMsgs...)
+				newMsgs = append(newMsgs, map[string]any{
+					"role":    "assistant",
+					"content": "...",
+				})
+				newMsgs = append(newMsgs, map[string]any{
+					"role":    "user",
+					"content": "Continue and execute the plan.",
+				})
+				newReq["messages"] = newMsgs
+
+				sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
+				requestN := s.State.NextRequestN()
+				effectiveModel := mappedModel
+				if avail := acc.AvailableModels(); len(avail) > 0 {
+					effectiveModel = ResolveModelForAccount(mappedModel, avail)
+				}
+				upBody := irEncodeGeminiRequest(newReq, "openai", acc.ProjectID, sessionUUID, requestN)
+				upBody["model"] = effectiveModel
+				bodyBytes, err := json.Marshal(upBody)
+				if err != nil {
+					log.Printf("stitch marshal failed: %v", err)
+					return nil
+				}
+				accessToken, ok := s.ensureFreshToken(
+					acc, mappedModel, originalModel, clientIP, apiKeyID, w)
+				if !ok {
+					return nil
+				}
+				cResp, err := SendRequest(r.Context(), s.HTTP, accessToken, acc.ProjectID, bodyBytes, true, acc.MachineID)
+				if err != nil || cResp.StatusCode != http.StatusOK {
+					if cResp != nil && cResp.Body != nil {
+						cResp.Body.Close()
+					}
+					log.Printf("stitch request failed: %v", err)
+					return nil
+				}
+				return cResp.Body
+			}
+
 			s.streamOpenAISSEIR(w, resp.Body, chatID, created,
-				originalModel, acc.ID, apiKeyID, clientIP)
+				originalModel, acc.ID, apiKeyID, clientIP, stitchFn)
 			resp.Body.Close()
 		},
 		handleSuccessNonStream: func(w http.ResponseWriter, resp *http.Response, acc *account.Account) {

@@ -55,7 +55,7 @@ func DecodeResponses(req map[string]any) *Request {
 
 	// Instructions → system prompt.
 	if instr, ok := req["instructions"].(string); ok {
-		r.System = instr
+		r.System = SanitizeSystemPrompt(instr)
 	}
 
 	// Input → messages.
