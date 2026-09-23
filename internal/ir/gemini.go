@@ -236,15 +236,10 @@ func encodeGeminiPart(c Content) map[string]any {
 		return map[string]any{"text": c.Text}
 
 	case ContentThinking:
-		part := map[string]any{"text": c.Thinking.Text, "thought": true}
-		sig := c.Thinking.Signature
-		if sig == "" && !c.Thinking.Redacted {
-			sig = "skip_thought_signature_validator"
-		}
-		if sig != "" {
-			part["thoughtSignature"] = sig
-		}
-		return part
+		// strip thought parts from model turns: Code Assist requires thought_signature when
+		// thought parts are echoed back, but rig drops them from history, causing 400 errors.
+		// removing them entirely is accepted fine.
+		return nil
 
 	case ContentImage:
 		if c.Image.Data != "" {

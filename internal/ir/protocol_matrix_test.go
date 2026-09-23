@@ -1373,26 +1373,28 @@ func TestMatrix_Gemini_ThinkingInMessage(t *testing.T) {
 	req := &Request{
 		Model: "gemini-2.5-flash",
 		Messages: []Message{
-			{Role: "assistant", Content: []Content{{
-				Type:     ContentThinking,
-				Thinking: &Thinking{Text: "My thoughts...", Signature: "sig_123"},
-			}}},
+			{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}},
+			{Role: "assistant", Content: []Content{
+				{Type: ContentThinking, Thinking: &Thinking{Text: "My thoughts...", Signature: "sig_123"}},
+				{Type: ContentText, Text: "Final answer"},
+			}},
 		},
 	}
 	body := encodeGeminiBody(req)
 	contents, _ := body["contents"].([]any)
-	// ensureValidFirstTurn prepends a user pad when first message is model.
 	if len(contents) != 2 {
-		t.Fatalf("contents = %d, want 2 (pad + model)", len(contents))
+		t.Fatalf("contents = %d, want 2 (user + model)", len(contents))
 	}
 	c, _ := contents[1].(map[string]any)
 	parts, _ := c["parts"].([]any)
-	part, _ := parts[0].(map[string]any)
-	if part["thought"] != true {
-		t.Error("thought should be true")
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want 1 (thinking stripped, only text)", len(parts))
 	}
-	assertEqual(t, "text", part["text"], "My thoughts...")
-	assertEqual(t, "thoughtSignature", part["thoughtSignature"], "sig_123")
+	part, _ := parts[0].(map[string]any)
+	if part["thought"] == true {
+		t.Error("thought should be stripped")
+	}
+	assertEqual(t, "text", part["text"], "Final answer")
 }
 
 func TestMatrix_Gemini_LocalShellTool(t *testing.T) {
