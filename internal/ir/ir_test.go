@@ -1776,3 +1776,69 @@ func TestSanitizeSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestEncodeGeminiRequest_ToolChoice(t *testing.T) {
+	tools := []Tool{
+		{
+			Kind:        ToolFunction,
+			Name:        "get_weather",
+			Description: "Get weather for city",
+			Schema:      map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}},
+		},
+	}
+
+	// 1. Default AUTO / nil ToolChoice: toolConfig must be omitted to match native AGY omitempty
+	rAuto := &Request{Model: "gemini-2.5-flash", Tools: tools}
+	envAuto := EncodeGeminiRequest(rAuto, "proj", "sess", 1)
+	bodyAuto := envAuto["request"].(map[string]any)
+	if bodyAuto["toolConfig"] != nil {
+		t.Errorf("toolConfig should be omitted for default AUTO, got %v", bodyAuto["toolConfig"])
+	}
+
+	// 2. Explicit "none" ToolChoice: mode must be NONE
+	rNone := &Request{Model: "gemini-2.5-flash", Tools: tools, ToolChoice: "none"}
+	envNone := EncodeGeminiRequest(rNone, "proj", "sess", 1)
+	bodyNone := envNone["request"].(map[string]any)
+	tcNone, ok := bodyNone["toolConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolConfig expected for ToolChoice=none, got nil")
+	}
+	fccNone, _ := tcNone["functionCallingConfig"].(map[string]any)
+	if fccNone["mode"] != "NONE" {
+		t.Errorf("expected mode NONE, got %v", fccNone["mode"])
+	}
+
+	// 3. Explicit "required" ToolChoice: mode must be ANY
+	rReq := &Request{Model: "gemini-2.5-flash", Tools: tools, ToolChoice: "required"}
+	envReq := EncodeGeminiRequest(rReq, "proj", "sess", 1)
+	bodyReq := envReq["request"].(map[string]any)
+	tcReq, ok := bodyReq["toolConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolConfig expected for ToolChoice=required, got nil")
+	}
+	fccReq, _ := tcReq["functionCallingConfig"].(map[string]any)
+	if fccReq["mode"] != "ANY" {
+		t.Errorf("expected mode ANY, got %v", fccReq["mode"])
+	}
+
+	// 4. Specific function ToolChoice: mode must be ANY with allowedFunctionNames
+	rFn := &Request{
+		Model:      "gemini-2.5-flash",
+		Tools:      tools,
+		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "get_weather"}},
+	}
+	envFn := EncodeGeminiRequest(rFn, "proj", "sess", 1)
+	bodyFn := envFn["request"].(map[string]any)
+	tcFn, ok := bodyFn["toolConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolConfig expected for specific function choice, got nil")
+	}
+	fccFn, _ := tcFn["functionCallingConfig"].(map[string]any)
+	if fccFn["mode"] != "ANY" {
+		t.Errorf("expected mode ANY, got %v", fccFn["mode"])
+	}
+	fns, _ := fccFn["allowedFunctionNames"].([]string)
+	if len(fns) != 1 || fns[0] != "get_weather" {
+		t.Errorf("expected allowedFunctionNames [get_weather], got %v", fns)
+	}
+}
+

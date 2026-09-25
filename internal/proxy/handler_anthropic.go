@@ -5,10 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/deungjaho/hydra/internal/account"
 )
@@ -53,10 +50,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	var sessionID string
-	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
-		sessionID, _ = md["user_id"].(string)
-	}
+	sessionID := ExtractSessionKey(r, anthropicReq, "anthropic", clientIP, apiKeyID)
 	schedMode, noSticky := resolveScheduling(s, apiKey, r)
 
 	s.failoverLoop(w, accounts, failoverConfig{
@@ -128,8 +122,7 @@ func (s *ProxyServer) handleAnthropicMessages(w http.ResponseWriter, r *http.Req
 				})
 				contReq["messages"] = newMsgs
 
-				sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-				requestN := s.State.NextRequestN()
+				sessionUUID, requestN := s.State.Sticky.NextTrajectory(sessionID)
 				effectiveModel := mappedModel
 				if avail := acc.AvailableModels(); len(avail) > 0 {
 					effectiveModel = ResolveModelForAccount(mappedModel, avail)
@@ -209,10 +202,7 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 		return
 	}
 
-	var sessionID string
-	if md, ok := anthropicReq["metadata"].(map[string]any); ok {
-		sessionID, _ = md["user_id"].(string)
-	}
+	sessionID := ExtractSessionKey(r, anthropicReq, "anthropic", "", apiKeyID)
 	schedMode, noSticky := resolveScheduling(s, apiKey, r)
 
 	acc := SelectAccount(
@@ -233,8 +223,8 @@ func (s *ProxyServer) handleAnthropicCountTokens(w http.ResponseWriter, r *http.
 		return
 	}
 
-	sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-	requestN := s.State.NextRequestN()
+	sessionUUID, _ := s.State.Sticky.PeekTrajectory(sessionID)
+	requestN := uint64(0)
 
 	accessToken, ok := s.ensureFreshToken(acc, mappedModel, originalModel, "", nil, w)
 	if !ok {

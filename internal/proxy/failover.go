@@ -8,10 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/deungjaho/hydra/internal/account"
 	"github.com/deungjaho/hydra/internal/config"
@@ -75,6 +72,8 @@ func (s *ProxyServer) failoverLoop(
 	locationFailures := 0
 	locationRetries := 0
 
+	sessionUUID, requestN := s.State.Sticky.NextTrajectory(cfg.sessionID)
+
 	for attempt := 0; ; attempt++ {
 		acc := SelectAccount(
 			accounts,
@@ -127,9 +126,6 @@ func (s *ProxyServer) failoverLoop(
 				released = true
 			}
 		}
-
-		sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-		requestN := s.State.NextRequestN()
 
 		accessToken, ok := s.ensureFreshToken(
 			acc, cfg.mappedModel, cfg.originalModel, cfg.clientIP, cfg.apiKeyID, w)

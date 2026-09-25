@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/deungjaho/hydra/internal/account"
 	"github.com/deungjaho/hydra/internal/config"
 	"github.com/deungjaho/hydra/internal/db"
@@ -135,22 +137,35 @@ func (r *RateLimitTracker) key(accountID int64, model string) string {
 	return itoaInt64(accountID) + ":" + model
 }
 
-// StickySessions maps session id → account id.
-// Tracks last access time so stale bindings can be evicted.
+// TrajectoryState tracks persistent trajectory metadata for an AGY session.
+type TrajectoryState struct {
+	UUID       string
+	StepIndex  uint64
+	LastAccess time.Time
+}
+
+// StickySessions maps session id → account id and maintains trajectory
+// continuity (persistent UUID and monotonically increasing step index).
+// Tracks last access time so stale bindings and trajectories can be evicted.
 type StickySessions struct {
-	mu         sync.Mutex
-	bindings   map[string]int64
-	lastAccess map[string]time.Time
+	mu           sync.Mutex
+	bindings     map[string]int64
+	lastAccess   map[string]time.Time
+	trajectories map[string]*TrajectoryState
 }
 
 func NewStickySessions() *StickySessions {
 	return &StickySessions{
-		bindings:   make(map[string]int64),
-		lastAccess: make(map[string]time.Time),
+		bindings:     make(map[string]int64),
+		lastAccess:   make(map[string]time.Time),
+		trajectories: make(map[string]*TrajectoryState),
 	}
 }
 
 func (s *StickySessions) Get(sessionID string) (int64, bool) {
+	if sessionID == "" {
+		return 0, false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id, ok := s.bindings[sessionID]
@@ -161,6 +176,9 @@ func (s *StickySessions) Get(sessionID string) (int64, bool) {
 }
 
 func (s *StickySessions) Bind(sessionID string, accountID int64) {
+	if sessionID == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.bindings[sessionID] = accountID
@@ -168,14 +186,60 @@ func (s *StickySessions) Bind(sessionID string, accountID int64) {
 }
 
 func (s *StickySessions) Unbind(sessionID string) {
+	if sessionID == "" {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.bindings, sessionID)
-	delete(s.lastAccess, sessionID)
 }
 
-// Cleanup removes bindings not accessed within maxIdle. Called
-// periodically to prevent unbounded growth from ended sessions.
+// NextTrajectory returns the persistent trajectory UUID and the next
+// step index (1-based) for the session. If sessionID is empty, it returns
+// a fresh UUID and step 1.
+func (s *StickySessions) NextTrajectory(sessionID string) (string, uint64) {
+	if sessionID == "" {
+		return strings.ReplaceAll(uuid.NewString(), "-", ""), 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	s.lastAccess[sessionID] = now
+
+	t, ok := s.trajectories[sessionID]
+	if !ok {
+		u := strings.ReplaceAll(uuid.NewString(), "-", "")
+		s.trajectories[sessionID] = &TrajectoryState{
+			UUID:       u,
+			StepIndex:  1,
+			LastAccess: now,
+		}
+		return u, 1
+	}
+
+	t.StepIndex++
+	t.LastAccess = now
+	return t.UUID, t.StepIndex
+}
+
+// PeekTrajectory returns the existing trajectory UUID and step index without
+// incrementing. If no trajectory exists or sessionID is empty, a fresh UUID
+// and step 1 are returned.
+func (s *StickySessions) PeekTrajectory(sessionID string) (string, uint64) {
+	if sessionID == "" {
+		return strings.ReplaceAll(uuid.NewString(), "-", ""), 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if t, ok := s.trajectories[sessionID]; ok {
+		return t.UUID, t.StepIndex
+	}
+	return strings.ReplaceAll(uuid.NewString(), "-", ""), 1
+}
+
+// Cleanup removes bindings and trajectories not accessed within maxIdle.
 func (s *StickySessions) Cleanup(maxIdle time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,6 +247,7 @@ func (s *StickySessions) Cleanup(maxIdle time.Duration) {
 	for sid, t := range s.lastAccess {
 		if t.Before(cutoff) {
 			delete(s.bindings, sid)
+			delete(s.trajectories, sid)
 			delete(s.lastAccess, sid)
 		}
 	}

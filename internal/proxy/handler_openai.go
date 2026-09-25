@@ -5,12 +5,10 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/account"
 	"github.com/deungjaho/hydra/internal/ir"
-	"github.com/google/uuid"
 )
 
 func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +51,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	sessionID, _ := openaiReq["user"].(string)
+	sessionID := ExtractSessionKey(r, openaiReq, "openai", clientIP, apiKeyID)
 	schedMode, noSticky := resolveScheduling(s, apiKey, r)
 
 	s.failoverLoop(w, accounts, failoverConfig{
@@ -106,8 +104,7 @@ func (s *ProxyServer) handleChatCompletions(w http.ResponseWriter, r *http.Reque
 				})
 				newReq["messages"] = newMsgs
 
-				sessionUUID := strings.ReplaceAll(uuid.NewString(), "-", "")
-				requestN := s.State.NextRequestN()
+				sessionUUID, requestN := s.State.Sticky.NextTrajectory(sessionID)
 				effectiveModel := mappedModel
 				if avail := acc.AvailableModels(); len(avail) > 0 {
 					effectiveModel = ResolveModelForAccount(mappedModel, avail)

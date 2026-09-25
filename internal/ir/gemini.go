@@ -184,9 +184,30 @@ func encodeGeminiBody(req *Request) map[string]any {
 		if len(toolsList) > 0 {
 			body["tools"] = toolsList
 		}
-		if len(funcDecls) > 0 {
-			body["toolConfig"] = map[string]any{
-				"functionCallingConfig": map[string]any{"mode": "AUTO"},
+		if req.ToolChoice != nil {
+			switch tc := req.ToolChoice.(type) {
+			case string:
+				switch strings.ToLower(tc) {
+				case "none":
+					body["toolConfig"] = map[string]any{
+						"functionCallingConfig": map[string]any{"mode": "NONE"},
+					}
+				case "required", "any":
+					body["toolConfig"] = map[string]any{
+						"functionCallingConfig": map[string]any{"mode": "ANY"},
+					}
+				}
+			case map[string]any:
+				if fn, ok := tc["function"].(map[string]any); ok {
+					if name, ok := fn["name"].(string); ok && name != "" {
+						body["toolConfig"] = map[string]any{
+							"functionCallingConfig": map[string]any{
+								"mode":                 "ANY",
+								"allowedFunctionNames": []string{name},
+							},
+						}
+					}
+				}
 			}
 		}
 	}
