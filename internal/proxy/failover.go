@@ -261,6 +261,31 @@ func (s *ProxyServer) failoverLoop(
 			return
 		}
 
+		// 403: permission denied or validation required on this account → cooldown, unbind sticky, and failover.
+		if resp.StatusCode == 403 {
+			bodyText, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			releaseOnce()
+			s.State.RateLimiter.SetCooldown(
+				acc.ID, cfg.mappedModel, cooldownTokenError)
+			logErr(account.MarkError(s.State.DB, acc.ID,
+				string(bodyText), false))
+			logErr(account.LogRequest(s.State.DB, account.LogRequestParams{
+				AccountID: &acc.ID,
+				Model:     &cfg.originalModel,
+				Status:    int64(resp.StatusCode),
+				ClientIP:  pstrIf(cfg.clientIP != "", cfg.clientIP),
+				Error:     pstr(string(bodyText)),
+				APIKeyID:  cfg.apiKeyID,
+			}))
+			if cfg.sessionID != "" {
+				s.State.Sticky.Unbind(cfg.sessionID)
+			}
+			log.Printf("failover: account %s got 403 for %s, trying next account",
+				acc.Email, cfg.originalModel)
+			continue
+		}
+
 		// Other non-2xx: return to client, no failover.
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			bodyText, _ := io.ReadAll(resp.Body)

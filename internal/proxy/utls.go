@@ -33,6 +33,8 @@ func NewUpstreamClient(proxyURL string) *http.Client {
 		if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
 			transport.Proxy = http.ProxyURL(u)
 		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
 	}
 	return &http.Client{
 		Transport: transport,
@@ -46,9 +48,11 @@ func NewUTLSClient(proxyURL string) *http.Client {
 
 // NewHTTPClient returns a standard *http.Client for non-streaming calls (OAuth,
 // quota fetch). When proxyURL is set, the transport routes through the HTTP
-// proxy.
+// proxy; otherwise it respects standard proxy environment variables.
 func NewHTTPClient(timeout time.Duration, proxyURL string) *http.Client {
 	transport := &http.Transport{
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
 		MaxIdleConns:          10,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
@@ -60,6 +64,8 @@ func NewHTTPClient(timeout time.Duration, proxyURL string) *http.Client {
 		if err == nil && u.Host != "" {
 			transport.Proxy = http.ProxyURL(u)
 		}
+	} else {
+		transport.Proxy = http.ProxyFromEnvironment
 	}
 	return &http.Client{
 		Transport: transport,

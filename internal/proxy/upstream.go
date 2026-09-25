@@ -55,7 +55,6 @@ func doSend(
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept-Encoding", "gzip")
 
 	// Bound the wait for response headers only. The whole-body timeout on
 	// http.Client would also kill healthy long-running SSE streams; a hung

@@ -8,13 +8,13 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/deungjaho/hydra/internal/version"
 )
 
-// Three fallback hosts — the desktop app tries them in order.
+// Fallback hosts tried in order.
 var quotaHosts = []string{
-	"https://daily-cloudcode-pa.sandbox.googleapis.com",
 	"https://daily-cloudcode-pa.googleapis.com",
 	"https://cloudcode-pa.googleapis.com",
 }
@@ -121,20 +121,44 @@ type rawResp struct {
 }
 
 func postJSON(ctx context.Context, client *http.Client, urlStr, accessToken string, payload []byte) (*rawResp, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", urlStr, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("User-Agent", version.UserAgent())
+		req.Header.Set("Content-Type", "application/json")
+		req.Close = true // prevent stale connection reuse across different hosts causing EOF
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if isTransientNetErr(err) && attempt == 0 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(50 * time.Millisecond):
+					continue
+				}
+			}
+			return nil, err
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return &rawResp{status: resp.StatusCode, body: string(body)}, nil
 	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", version.UserAgent())
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	return nil, lastErr
+}
+
+func isTransientNetErr(err error) bool {
+	if err == nil {
+		return false
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return &rawResp{status: resp.StatusCode, body: string(body)}, nil
+	s := err.Error()
+	return strings.Contains(s, "EOF") ||
+		strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "broken pipe")
 }
 
 func parseModelPercentages(body string) map[string]int32 {
