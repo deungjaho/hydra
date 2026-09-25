@@ -19,6 +19,7 @@ type AccountStore interface {
 	ListAccounts() ([]*account.Account, error)
 	GetAccount(id int64) (*account.Account, error)
 	SetAccountDisabled(id int64, disabled bool) error
+	MarkHealthRecovered(id int64) error
 	RemoveAccount(id int64) error
 }
 
@@ -96,6 +97,9 @@ func (s *dbAccountStore) GetAccount(id int64) (*account.Account, error) {
 }
 func (s *dbAccountStore) SetAccountDisabled(id int64, disabled bool) error {
 	return account.SetAccountDisabled(s.d, id, disabled)
+}
+func (s *dbAccountStore) MarkHealthRecovered(id int64) error {
+	return account.MarkHealthRecovered(s.d, id)
 }
 func (s *dbAccountStore) RemoveAccount(id int64) error {
 	return account.RemoveAccount(s.d, id)
@@ -186,6 +190,7 @@ func (s *Service) EnableAccount(ctx context.Context, id int64) error {
 	if err := s.Accounts.SetAccountDisabled(id, false); err != nil {
 		return NewError(CodeInternal, "failed to enable account", WithCause(err))
 	}
+	_ = s.Accounts.MarkHealthRecovered(id)
 	return nil
 }
 

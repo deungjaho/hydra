@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/account"
@@ -261,15 +263,19 @@ func (s *ProxyServer) failoverLoop(
 			return
 		}
 
-		// 403: permission denied or validation required on this account → cooldown, unbind sticky, and failover.
+		// 403: permission denied or validation required on this account → account-level cooldown, disable, alert, and failover.
 		if resp.StatusCode == 403 {
 			bodyText, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			releaseOnce()
-			s.State.RateLimiter.SetCooldown(
-				acc.ID, cfg.mappedModel, cooldownTokenError)
-			logErr(account.MarkError(s.State.DB, acc.ID,
-				string(bodyText), false))
+
+			// Account-level full cooldown in memory (blocks all models for this account)
+			s.State.RateLimiter.SetCooldown(acc.ID, "", cooldownTokenError)
+			s.State.RateLimiter.SetCooldown(acc.ID, cfg.mappedModel, cooldownTokenError)
+
+			// Mark error in DB and set health_disabled=1 to halt all scheduling & background quota loops
+			logErr(account.MarkError(s.State.DB, acc.ID, string(bodyText), true))
+
 			logErr(account.LogRequest(s.State.DB, account.LogRequestParams{
 				AccountID: &acc.ID,
 				Model:     &cfg.originalModel,
@@ -281,6 +287,19 @@ func (s *ProxyServer) failoverLoop(
 			if cfg.sessionID != "" {
 				s.State.Sticky.Unbind(cfg.sessionID)
 			}
+
+			// Extract validation URL and notify user via terminal and optional webhook
+			valURL := extractValidationURL(bodyText)
+			if valURL != "" {
+				printValidationAlert(acc.Email, acc.ID, valURL)
+				if s.Config.HealthCheck.NotifyWebhook != "" {
+					go sendValidationWebhook(s.Config.HealthCheck.NotifyWebhook, acc.Email, acc.ID, valURL)
+				}
+			} else {
+				log.Printf("failover: account %s (id=%d) disabled due to 403: %s",
+					acc.Email, acc.ID, truncateStr(string(bodyText), 200))
+			}
+
 			log.Printf("failover: account %s got 403 for %s, trying next account",
 				acc.Email, cfg.originalModel)
 			continue
@@ -430,4 +449,70 @@ func parseGeminiSuccessBody(w http.ResponseWriter, resp *http.Response, writeErr
 		return nil
 	}
 	return geminiResp
+}
+
+func extractValidationURL(body []byte) string {
+	var gErr struct {
+		Error struct {
+			Details []struct {
+				Reason   string            `json:"reason"`
+				Metadata map[string]string `json:"metadata"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &gErr); err == nil {
+		for _, d := range gErr.Error.Details {
+			if u, ok := d.Metadata["validation_url"]; ok && u != "" {
+				return u
+			}
+		}
+	}
+	return ""
+}
+
+func printValidationAlert(email string, id int64, validationURL string) {
+	oscLink := fmt.Sprintf("\x1b]8;;%s\x1b\\👉 点击此处在浏览器中完成验证 / Click to Verify\x1b]8;;\x1b\\", validationURL)
+	msg := fmt.Sprintf("\n"+
+		"\x1b[1;31m================================================================================\x1b[0m\n"+
+		"\x1b[1;33m⚠ [ACTION REQUIRED] Google Code Assist 安全验证拦截 (VALIDATION_REQUIRED)\x1b[0m\n"+
+		"  \x1b[1m账号:\x1b[0m %s (ID: %d)\n"+
+		"  \x1b[1m状态:\x1b[0m 已自动将该账号全模型熔断并禁用 (HealthDisabled=1)，阻止死循环重试\n"+
+		"  \x1b[1m超链接:\x1b[0m %s\n"+
+		"  \x1b[1m完整URL:\x1b[0m \x1b[36m%s\x1b[0m\n"+
+		"  \x1b[1;32m👉 提示:\x1b[0m 请在同网络环境浏览器中访问上方链接通过验证后，执行以下命令重新启用:\n"+
+		"         \x1b[1;32mhydra accounts enable %d\x1b[0m\n"+
+		"\x1b[1;31m================================================================================\x1b[0m\n",
+		email, id, oscLink, validationURL, id)
+	fmt.Fprint(os.Stderr, msg)
+}
+
+func sendValidationWebhook(webhookURL, email string, id int64, validationURL string) {
+	payload, err := json.Marshal(map[string]any{
+		"event":          "account_validation_required",
+		"account_id":     id,
+		"email":          email,
+		"validation_url": validationURL,
+		"message":        fmt.Sprintf("Google Code Assist account %s requires validation. Verify at %s and run 'hydra accounts enable %d'", email, validationURL, id),
+		"timestamp":      time.Now().Unix(),
+	})
+	if err != nil {
+		return
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	req, err := http.NewRequest("POST", webhookURL, bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
+	}
+}
+
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

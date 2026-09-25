@@ -125,3 +125,63 @@ func TestSelectAccount_QuotaWarnDeprioritization(t *testing.T) {
 		t.Errorf("SelectAccount = %d, want 2 (higher quota)", got.ID)
 	}
 }
+
+func TestRateLimitTracker_AccountLevelCooldown(t *testing.T) {
+	limiter := NewRateLimitTracker()
+	accountID := int64(42)
+
+	if limiter.IsLimited(accountID, "gemini-3.7-flash") {
+		t.Error("should not be limited initially")
+	}
+
+	// Set whole-account cooldown
+	limiter.SetCooldown(accountID, "", 300)
+
+	// Every model should now be limited
+	if !limiter.IsLimited(accountID, "gemini-3.7-flash") {
+		t.Error("gemini-3.7-flash should be limited under account-level cooldown")
+	}
+	if !limiter.IsLimited(accountID, "claude-sonnet-4-6") {
+		t.Error("claude-sonnet-4-6 should be limited under account-level cooldown")
+	}
+	if !limiter.IsLimited(accountID, "") {
+		t.Error("empty model should also be limited under account-level cooldown")
+	}
+
+	// Clear cooldown
+	limiter.Clear(accountID)
+	if limiter.IsLimited(accountID, "gemini-3.7-flash") {
+		t.Error("should not be limited after Clear")
+	}
+}
+
+func TestExtractValidationURL(t *testing.T) {
+	raw := []byte(`{
+  "error": {
+    "code": 403,
+    "message": "Verify your account to continue.",
+    "status": "PERMISSION_DENIED",
+    "details": [
+      {
+        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+        "reason": "VALIDATION_REQUIRED",
+        "domain": "cloudcode-pa.googleapis.com",
+        "metadata": {
+          "validation_url": "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=test1234"
+        }
+      }
+    ]
+  }
+}`)
+	got := extractValidationURL(raw)
+	want := "https://accounts.google.com/signin/continue?sarp=1&scc=1&plt=test1234"
+	if got != want {
+		t.Errorf("extractValidationURL = %q, want %q", got, want)
+	}
+
+	// Non-validation error
+	got2 := extractValidationURL([]byte(`{"error":{"code":400,"message":"bad"}}`))
+	if got2 != "" {
+		t.Errorf("extractValidationURL for non-validation = %q, want empty", got2)
+	}
+}

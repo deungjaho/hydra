@@ -50,6 +50,16 @@ func (s *fakeAccountStore) SetAccountDisabled(id int64, disabled bool) error {
 	a.OperatorDisabled = disabled
 	return nil
 }
+func (s *fakeAccountStore) MarkHealthRecovered(id int64) error {
+	if s.err != nil {
+		return s.err
+	}
+	if a, ok := s.accounts[id]; ok {
+		a.HealthDisabled = false
+		a.LastError = ""
+	}
+	return nil
+}
 func (s *fakeAccountStore) RemoveAccount(id int64) error {
 	if s.err != nil {
 		return s.err

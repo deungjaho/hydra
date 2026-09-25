@@ -87,6 +87,16 @@ func NewRateLimitTracker() *RateLimitTracker {
 func (r *RateLimitTracker) IsLimited(accountID int64, model string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Check whole-account cooldown first
+	if t, ok := r.cooldowns[r.key(accountID, "")]; ok {
+		if time.Now().Before(t) {
+			return true
+		}
+		delete(r.cooldowns, r.key(accountID, ""))
+	}
+	if model == "" {
+		return false
+	}
 	t, ok := r.cooldowns[r.key(accountID, model)]
 	if !ok {
 		return false

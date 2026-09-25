@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/account"
@@ -74,8 +75,13 @@ func (s *ProxyServer) runHealthCheck(ctx context.Context, threshold int) {
 
 		if healthy {
 			s.State.healthFailures.Delete(acc.ID)
-			// If the account was health-disabled, auto-recover it.
+			// If the account was health-disabled, auto-recover it, EXCEPT if it was disabled
+			// by VALIDATION_REQUIRED (which requires browser verification, while ProbeAccount only tests models).
 			if acc.HealthDisabled {
+				if strings.Contains(acc.LastError, "VALIDATION_REQUIRED") {
+					log.Printf("health check: %s remains disabled (requires browser verification)", acc.Email)
+					continue
+				}
 				if err := account.MarkHealthRecovered(s.State.DB, acc.ID); err != nil {
 					log.Printf("health check: recover %s failed: %v", acc.Email, err)
 				} else {
