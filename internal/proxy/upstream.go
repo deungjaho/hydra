@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/deungjaho/hydra/internal/version"
-	"github.com/google/uuid"
 )
 
-// Antigravity v1internal upstream base (sandbox used by the desktop app).
+// Antigravity v1internal upstream base (daily sandbox used by agy CLI).
 const v1InternalBase = "https://daily-cloudcode-pa.googleapis.com/v1internal"
 
 // UpstreamURL builds the upstream URL for a generateContent call.
@@ -30,50 +28,23 @@ func UpstreamURL(stream bool) string {
 // SendRequest sends a request to the upstream and returns the raw response.
 //
 // ctx is the inbound client request context: if the client disconnects or
-// times out, the upstream request is cancelled and its h2 stream slot is
-// freed instead of starving the shared connection.
+// times out, the upstream request is cancelled and resources are released.
 //
-// machineID is the per-account machine identifier (persisted in DB). Pass
-// an empty string to generate a random one (for backwards compatibility).
-//
-// Implements the 403 SERVICE_DISABLED fallback: when the request includes the
-// x-goog-user-project header and the upstream returns 403, retry the exact
-// same request without that header. Without the header, Google infers the
-// project from the OAuth token's scope and bypasses the project-level
-// API-enabled check.
+// machineID and projectID are accepted for backwards compatibility with
+// existing caller signatures. The project is passed in the JSON envelope body
+// matching native agy CLI behavior; no x-goog-user-project header is sent.
 //
 // The caller is responsible for closing resp.Body.
 func SendRequest(ctx context.Context, client *http.Client, accessToken, projectID string, body []byte, stream bool, machineID string) (*http.Response, error) {
 	urlStr := UpstreamURL(stream)
-	if machineID == "" {
-		machineID = newMachineID()
-	}
-	sessionID := newSessionID()
-
-	resp, err := doSend(ctx, client, urlStr, accessToken, projectID, body, machineID, sessionID, true)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode == 403 {
-		// Drain and close the first response before retrying.
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-		resp2, err := doSend(ctx, client, urlStr, accessToken, projectID, body, machineID, sessionID, false)
-		if err != nil {
-			return nil, err
-		}
-		return resp2, nil
-	}
-	return resp, nil
+	return doSend(ctx, client, urlStr, accessToken, body)
 }
 
 func doSend(
 	ctx context.Context,
 	client *http.Client,
-	urlStr, accessToken, projectID string,
+	urlStr, accessToken string,
 	body []byte,
-	machineID, sessionID string,
-	includeProjectHeader bool,
 ) (*http.Response, error) {
 	reqCtx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(reqCtx, "POST", urlStr, bytes.NewReader(body))
@@ -84,10 +55,7 @@ func doSend(
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", version.UserAgent())
 	req.Header.Set("Content-Type", "application/json")
-
-	if includeProjectHeader && projectID != "" && projectID != "test-project" && projectID != "project-id" {
-		req.Header.Set("x-goog-user-project", projectID)
-	}
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	// Bound the wait for response headers only. The whole-body timeout on
 	// http.Client would also kill healthy long-running SSE streams; a hung
@@ -119,7 +87,7 @@ func doSend(
 }
 
 // cancelOnClose closes the body and cancels the request context so the
-// upstream stream slot is released even if the caller leaves early.
+// upstream connection is released even if the caller leaves early.
 type cancelOnClose struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -129,17 +97,4 @@ func (b *cancelOnClose) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
-}
-
-// newMachineID generates a random uppercase UUID for the x-machine-id header.
-// In normal operation, the caller passes a per-account machine ID persisted
-// in the DB; this function is the fallback when no account ID is available.
-func newMachineID() string {
-	return strings.ToUpper(uuid.NewString())
-}
-
-// newSessionID generates a fresh UUID for each request, mimicking the real
-// Antigravity desktop app which creates a new VS Code session ID per request.
-func newSessionID() string {
-	return uuid.NewString()
 }

@@ -275,6 +275,15 @@ func (d *Db) migrate() error {
 			return err
 		}
 	}
+	// v13: update legacy project_id to 'aicode-consumers' for existing accounts.
+	if userVersion < 13 {
+		if _, err := d.conn.Exec(`UPDATE accounts SET project_id = 'aicode-consumers' WHERE project_id IS NULL OR project_id = '' OR project_id != 'aicode-consumers'`); err != nil {
+			return err
+		}
+		if _, err := d.conn.Exec("PRAGMA user_version = 13"); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

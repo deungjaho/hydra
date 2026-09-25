@@ -234,5 +234,44 @@ func TestDBOpenFailsOnUnreadableFile(t *testing.T) {
 	}
 }
 
+func TestV13MigrationUpdatesLegacyProjectID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test_v13.db")
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Insert account with legacy project_id
+	_, err = d.conn.Exec(`
+		INSERT INTO accounts (email, access_token, refresh_token, project_id, expires_at, created_at)
+		VALUES ('test@legacy.com', 'tok', 'ref', 'alpine-light-1m5x8', 9999999999, 0)
+	`)
+	if err != nil {
+		t.Fatalf("insert account: %v", err)
+	}
+
+	// Reset user_version to 12 to simulate pre-v13 database
+	if _, err := d.conn.Exec("PRAGMA user_version = 12"); err != nil {
+		t.Fatalf("set user_version: %v", err)
+	}
+	d.Close()
+
+	// Re-open: should trigger v13 migration
+	d2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer d2.Close()
+
+	var projID string
+	err = d2.conn.QueryRow("SELECT project_id FROM accounts WHERE email = 'test@legacy.com'").Scan(&projID)
+	if err != nil {
+		t.Fatalf("query project_id: %v", err)
+	}
+	if projID != "aicode-consumers" {
+		t.Errorf("project_id = %s, want aicode-consumers", projID)
+	}
+}
+
 // Ensure sql.DB is referenced so the import isn't unused.
 var _ *sql.DB

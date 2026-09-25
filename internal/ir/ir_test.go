@@ -147,8 +147,11 @@ func TestEncodeGeminiRequest_Basic(t *testing.T) {
 	if body == nil {
 		t.Fatal("no request body in envelope")
 	}
-	if body["model"] != "gemini-3-pro" {
-		t.Errorf("model = %v", body["model"])
+	if env["model"] != "gemini-3-pro" {
+		t.Errorf("env model = %v", env["model"])
+	}
+	if body["model"] != nil {
+		t.Errorf("inner body should not contain model, got %v", body["model"])
 	}
 	sysInst, _ := body["systemInstruction"].(map[string]any)
 	if sysInst == nil {

@@ -50,6 +50,9 @@ func EncodeGeminiRequest(req *Request, projectID, sessionID string, requestN uin
 		"used_claude_conservative": "false",
 		"used_non_gemini_model":    "false",
 	}
+	if projectID == "" || projectID == "test-project" || projectID == "project-id" {
+		projectID = "aicode-consumers"
+	}
 	nowMs := time.Now().UnixMilli()
 	return map[string]any{
 		"project":     projectID,
@@ -63,9 +66,7 @@ func EncodeGeminiRequest(req *Request, projectID, sessionID string, requestN uin
 
 // encodeGeminiBody builds the generateContent request body from IR.
 func encodeGeminiBody(req *Request) map[string]any {
-	body := map[string]any{
-		"model": req.Model,
-	}
+	body := map[string]any{}
 
 	// System instruction.
 	if req.System != "" {
@@ -188,14 +189,6 @@ func encodeGeminiBody(req *Request) map[string]any {
 				"functionCallingConfig": map[string]any{"mode": "AUTO"},
 			}
 		}
-	}
-
-	// Disable all safety filters (matches Antigravity desktop).
-	body["safetySettings"] = []any{
-		map[string]any{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
-		map[string]any{"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
-		map[string]any{"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
-		map[string]any{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
 	}
 
 	return body

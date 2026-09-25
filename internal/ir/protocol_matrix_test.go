@@ -1266,15 +1266,8 @@ func TestMatrix_Gemini_SafetySettings(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
 	}
 	body := encodeGeminiBody(req)
-	safety, _ := body["safetySettings"].([]any)
-	if len(safety) != 4 {
-		t.Fatalf("safetySettings = %d, want 4", len(safety))
-	}
-	for _, sAny := range safety {
-		s, _ := sAny.(map[string]any)
-		if s["threshold"] != "OFF" {
-			t.Errorf("threshold = %v, want OFF", s["threshold"])
-		}
+	if body["safetySettings"] != nil {
+		t.Fatalf("safetySettings should be omitted to match agy CLI, got %v", body["safetySettings"])
 	}
 }
 
@@ -1417,21 +1410,8 @@ func TestMatrix_Gemini_SafetySettingsAllOff(t *testing.T) {
 		Messages: []Message{{Role: "user", Content: []Content{{Type: ContentText, Text: "hi"}}}},
 	}
 	body := encodeGeminiBody(req)
-	safety, _ := body["safetySettings"].([]any)
-	categories := map[string]bool{}
-	for _, sAny := range safety {
-		s, _ := sAny.(map[string]any)
-		cat, _ := s["category"].(string)
-		categories[cat] = true
-		if s["threshold"] != "OFF" {
-			t.Errorf("%s threshold = %v, want OFF", cat, s["threshold"])
-		}
-	}
-	expected := []string{"HARM_CATEGORY_HARASSMENT", "HARM_CATEGORY_HATE_SPEECH", "HARM_CATEGORY_SEXUALLY_EXPLICIT", "HARM_CATEGORY_DANGEROUS_CONTENT"}
-	for _, e := range expected {
-		if !categories[e] {
-			t.Errorf("category %s not found", e)
-		}
+	if body["safetySettings"] != nil {
+		t.Fatalf("safetySettings should not be present, got %v", body["safetySettings"])
 	}
 }
 

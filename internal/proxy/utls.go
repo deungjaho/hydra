@@ -2,194 +2,49 @@
 package proxy
 
 import (
-	"bufio"
-	"context"
 	"crypto/tls"
-	"fmt"
-	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
-
-	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 )
 
-// NewUTLSClient returns an *http.Client whose Transport emulates Chrome 133
-// via uTLS, with full HTTP/2 support over the uTLS connection.
+// NewUpstreamClient returns an *http.Client whose Transport matches native agy CLI:
+// standard Go crypto/tls fingerprint over HTTP/1.1 with chunked transfer encoding,
+// with optional HTTP CONNECT proxy support.
 //
-// Required: Google's cloudcode-pa endpoints reject clients without a matching
-// TLS fingerprint with 403 SERVICE_DISABLED. They also negotiate HTTP/2 via
-// ALPN, so we must support h2 over the uTLS connection.
-//
-// If proxyURL is non-empty (e.g. "http://127.0.0.1:7890"), upstream TLS
-// connections tunnel through the proxy via HTTP CONNECT, then perform the
-// uTLS handshake over the tunnelled raw stream.
-func NewUTLSClient(proxyURL string) *http.Client {
-	return &http.Client{
-		Transport: newUTLSTransport(proxyURL),
-	}
-}
-
-// utlsDialer manages uTLS connections with optional HTTP CONNECT proxy.
-type utlsDialer struct {
-	proxyURL string
-}
-
-func (d *utlsDialer) dialTLS(ctx context.Context, addr string) (net.Conn, error) {
-	host, _, _ := net.SplitHostPort(addr)
-
-	rawConn, err := dialUpstream(ctx, addr, d.proxyURL)
-	if err != nil {
-		return nil, err
-	}
-
-	config := &utls.Config{
-		ServerName: host,
-		NextProtos: []string{"h2", "http/1.1"},
-	}
-	uconn := utls.UClient(rawConn, config, utls.HelloChrome_Auto)
-	if err := uconn.HandshakeContext(ctx); err != nil {
-		_ = rawConn.Close()
-		return nil, fmt.Errorf("uTLS handshake: %w", err)
-	}
-	return uconn, nil
-}
-
-// newUTLSTransport creates a custom http.RoundTripper that:
-//   - For HTTP/2 (h2) connections: uses http2.Transport with uTLS dialing
-//   - Falls back to HTTP/1.1 if the server doesn't support h2
-type utlsTransport struct {
-	h2transport *http2.Transport
-	h1transport *http.Transport
-	proxyURL    string
-}
-
-func newUTLSTransport(proxyURL string) *utlsTransport {
-	dialer := &utlsDialer{proxyURL: proxyURL}
-
-	t := &utlsTransport{
-		proxyURL: proxyURL,
-		h2transport: &http2.Transport{
-			AllowHTTP: false,
-			DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-				return dialer.dialTLS(ctx, addr)
-			},
-			// Ping the connection after 30s of no frames; drop it if no pong
-			// arrives within 15s. This turns a silently dead connection into
-			// stream errors instead of hanging pending requests forever.
-			ReadIdleTimeout: 30 * time.Second,
-			PingTimeout:     15 * time.Second,
+// agy CLI is a pure Go binary compiled with Go's toolchain. It uses standard Go
+// crypto/tls and HTTP/1.1 without ALPN h2 for endpoints on daily-cloudcode-pa.googleapis.com.
+func NewUpstreamClient(proxyURL string) *http.Client {
+	transport := &http.Transport{
+		ForceAttemptHTTP2: false,
+		// TLSNextProto non-nil disables HTTP/2 automatic upgrade and ALPN advertisement.
+		TLSNextProto: make(map[string]func(authority string, c *tls.Conn) http.RoundTripper),
+		TLSClientConfig: &tls.Config{
+			// Go standard library crypto/tls defaults (identical to agy CLI binary).
 		},
-	}
-
-	// HTTP/1.1 fallback transport (for non-h2 servers)
-	t.h1transport = &http.Transport{
-		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.dialTLS(ctx, addr)
-		},
-		ForceAttemptHTTP2:     false,
 		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 	}
-
-	return t
-}
-
-// RoundTrip implements http.RoundTripper. It tries HTTP/2 first (since Google's
-// cloudcode-pa endpoints negotiate h2), and falls back to HTTP/1.1 if the
-// connection doesn't support h2.
-func (t *utlsTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// http2.Transport requires the request to use the canonical URL scheme.
-	// It will dial via DialTLSContext, get a uTLS conn, check ALPN, and
-	// use h2 if negotiated.
-	resp, err := t.h2transport.RoundTrip(req)
-	if err == nil {
-		return resp, nil
-	}
-
-	// If h2 fails (e.g. server only supports HTTP/1.1), fall back.
-	// Reset request body if possible, since h2 transport may have consumed it.
-	if req.GetBody != nil {
-		if body, bodyErr := req.GetBody(); bodyErr == nil {
-			req.Body = body
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil && u.Host != "" {
+			transport.Proxy = http.ProxyURL(u)
 		}
 	}
-	return t.h1transport.RoundTrip(req)
+	return &http.Client{
+		Transport: transport,
+	}
 }
 
-// dialUpstream establishes a raw TCP stream to addr, optionally tunnelling
-// through an HTTP CONNECT proxy.
-func dialUpstream(ctx context.Context, addr, proxyURL string) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-
-	if proxyURL == "" {
-		return dialer.DialContext(ctx, "tcp", addr)
-	}
-
-	u, err := url.Parse(proxyURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy URL: %w", err)
-	}
-	proxyAddr := u.Host
-	if proxyAddr == "" {
-		proxyAddr = proxyURL
-	}
-	if !strings.Contains(proxyAddr, ":") {
-		proxyAddr += ":8080"
-	}
-
-	conn, err := dialer.DialContext(ctx, "tcp", proxyAddr)
-	if err != nil {
-		return nil, fmt.Errorf("dial proxy %s: %w", proxyAddr, err)
-	}
-
-	connectReq := &http.Request{
-		Method: "CONNECT",
-		URL:    &url.URL{Opaque: addr},
-		Host:   addr,
-		Header: make(http.Header),
-	}
-	if err := connectReq.Write(conn); err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("write CONNECT: %w", err)
-	}
-
-	br := bufio.NewReader(conn)
-	resp, err := http.ReadResponse(br, connectReq)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("read CONNECT response: %w", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		_ = conn.Close()
-		return nil, fmt.Errorf("proxy CONNECT %s failed: %s", addr, resp.Status)
-	}
-
-	if br.Buffered() > 0 {
-		return &bufferedConn{r: br, Conn: conn}, nil
-	}
-	return conn, nil
+// NewUTLSClient is an alias for NewUpstreamClient for backwards compatibility.
+func NewUTLSClient(proxyURL string) *http.Client {
+	return NewUpstreamClient(proxyURL)
 }
 
-type bufferedConn struct {
-	r *bufio.Reader
-	net.Conn
-}
-
-func (c *bufferedConn) Read(b []byte) (int, error) {
-	return c.r.Read(b)
-}
-
-// NewHTTPClient returns a standard *http.Client for non-uTLS calls (OAuth,
+// NewHTTPClient returns a standard *http.Client for non-streaming calls (OAuth,
 // quota fetch). When proxyURL is set, the transport routes through the HTTP
 // proxy.
 func NewHTTPClient(timeout time.Duration, proxyURL string) *http.Client {

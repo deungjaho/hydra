@@ -18,13 +18,13 @@ import (
 type ProxyServer struct {
 	Config   *config.AppConfig
 	State    *ProxyState
-	HTTP     *http.Client // uTLS client for Gemini upstream
+	HTTP     *http.Client // upstream client for Gemini upstream
 	OAuth    *http.Client // standard client for OAuth/quota (no uTLS)
 	Probe    *http.Client // short-timeout client for health check probes
 	Registry *registry.Registry
 }
 
-// NewProxyServer builds a ProxyServer with a uTLS-backed upstream client
+// NewProxyServer builds a ProxyServer with an agy-aligned upstream client
 // and a standard HTTP client for OAuth token refresh / quota fetch.
 func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 	probeTimeout := time.Duration(cfg.HealthCheck.TimeoutSeconds) * time.Second
@@ -34,7 +34,7 @@ func NewProxyServer(cfg *config.AppConfig, state *ProxyState) *ProxyServer {
 	return &ProxyServer{
 		Config:   cfg,
 		State:    state,
-		HTTP:     NewUTLSClient(cfg.Proxy.UpstreamProxy),
+		HTTP:     NewUpstreamClient(cfg.Proxy.UpstreamProxy),
 		OAuth:    NewHTTPClient(oauthTimeout, cfg.Proxy.UpstreamProxy),
 		Probe:    NewHTTPClient(probeTimeout, cfg.Proxy.UpstreamProxy),
 		Registry: registry.New(),
